@@ -1,0 +1,18 @@
+[Bubble Columns]
+
+#    Highest water column a single soul sand or magma block can drive, in nodes.
+bubble_columns_max_height (Maximum column height) int 24 1 128
+
+#    Terminal upward speed inside a soul sand column, in nodes per second.
+bubble_columns_up_speed (Updraft speed) float 8.0 0.0 40.0
+
+#    Terminal downward speed inside a magma whirlpool, in nodes per second.
+bubble_columns_down_speed (Whirlpool speed) float 6.0 0.0 40.0
+
+#    How sharply objects are pulled to that speed, in nodes per second squared.
+#    Lower values feel more like drifting, higher like being fired from a tube.
+bubble_columns_accel (Acceleration) float 30.0 1.0 200.0
+
+#    Refill the player's air while they ride a soul sand column, as in
+#    Minecraft. Magma whirlpools never refill air whatever this is set to.
+bubble_columns_restore_air (Updraft refills air) bool true
