@@ -622,6 +622,53 @@ def test_liquid_overrides():
           close(sinker._vel.y, -6), sinker._vel.y)
 
 
+def test_surface_resonance():
+    """Breaching the top used to build a growing bounce: gravity stayed at 0
+    for the 0.3s grace so the exit arc became a coast, the player fell back in
+    faster, got re-driven to full speed and launched higher each cycle."""
+    print("surface behaviour (no resonance)")
+    lua = load_mod()
+    g = lua.globals()
+    # Water occupies y=1..4, so the surface is at y=4.5.
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 4)
+
+    player = g.MAKE_OBJECT(0, 2, 0, lua.table(player=True, name="iris"))
+    g.RUN_STEPS(0.2, 0.05)
+    check("submerged player is lifted",
+          g.FACTOR(player, "gravity/bubble_columns:column") == 0)
+
+    # Head at y+1.4 = 5.4 -> node 5 -> air. Feet still wet at node 4.
+    player._pos = g.vector.new(0, 4.0, 0)
+    player._vel = g.vector.new(0, 6.0, 0)
+    g.RUN_STEPS(0.05, 0.05)   # exactly one step
+    check("released within ONE step of breaching, no grace",
+          g.FACTOR(player, "gravity/bubble_columns:column") is None,
+          g.FACTOR(player, "gravity/bubble_columns:column"))
+    check("liquid_sink released too",
+          g.FACTOR(player, "liquid_sink/bubble_columns:column") is None)
+    check("not re-driven once the head is clear",
+          close(player._vel.y, 6.0), player._vel.y)
+
+    # The column must still be registered, so its bubbles keep drawing for
+    # someone floating at the top.
+    check("column still tracked while player is at the surface",
+          g.bubble_columns.columns["0,0,0"] is not None)
+
+    # Simulate repeated surface bounces: energy must not accumulate.
+    peaks = []
+    for _ in range(4):
+        player._pos = g.vector.new(0, 2.0, 0)      # falls back in, submerged
+        player._vel = g.vector.new(0, -6.0, 0)
+        g.RUN_STEPS(0.1, 0.05)
+        peaks.append(player._vel.y)
+        player._pos = g.vector.new(0, 4.0, 0)      # breaches again
+        g.RUN_STEPS(0.05, 0.05)
+    check("re-entry speed is identical every bounce (no growth)",
+          all(close(p, peaks[0]) for p in peaks), peaks)
+    check("re-entry speed is capped at the target, not compounding",
+          peaks[0] <= 8 + 1e-9, peaks[0])
+
+
 def test_join_cleanup():
     print("crash-safety on join")
     lua = load_mod()
@@ -698,7 +745,8 @@ def main():
     for test in (test_column_detection, test_max_height, test_updraft_physics,
                  test_whirlpool_physics, test_standing_on_the_source_block,
                  test_selectivity, test_breath,
-                 test_gravity_lift, test_liquid_overrides, test_join_cleanup,
+                 test_gravity_lift, test_liquid_overrides, test_surface_resonance,
+                 test_join_cleanup,
                  test_bubblecheck_command, test_expiry, test_particles):
         test()
         print()

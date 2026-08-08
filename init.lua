@@ -278,7 +278,9 @@ local function begin_lift(obj, rising)
 		if state.kind == want then return end
 		state.kind = want
 	else
-		lifted[obj] = {kind = want, last_seen = now}
+		-- is_player cached: end_lift may run after the object is gone, and
+		-- the release sweep must still know which path to take.
+		lifted[obj] = {kind = want, last_seen = now, is_player = obj:is_player()}
 	end
 	-- Only the updraft needs the hold: it keeps gravity from clawing back
 	-- what the velocity drive gains between steps.  A whirlpool wants
@@ -376,34 +378,50 @@ end
 -- enough -- liquid drag eats the injected velocity between ticks, which is
 -- why the earlier version left the player sinking at -0.30 with the gravity
 -- override already applied.
-local function scan_players()
+local function scan_players(in_column)
 	for _, player in ipairs(core.get_connected_players()) do
 		local pos = player:get_pos()
-		if is_water(core.get_node(pos).name)
-			or is_water(core.get_node({x = pos.x, y = pos.y + 1.4, z = pos.z}).name) then
+		local feet_wet = is_water(core.get_node(pos).name)
+		-- Head submersion, not feet, decides whether the lift applies.
+		--
+		-- Driving whenever the feet touched water meant that breaching the
+		-- surface at the top re-kicked the player to full speed the instant
+		-- they fell back far enough to get their feet wet, so they bobbed
+		-- there indefinitely.  Requiring the head to be under means the lift
+		-- simply stops once they break the surface and they leave on a
+		-- normal ballistic arc, which is also how Minecraft ejects you.
+		local submerged = is_water(core.get_node({
+			x = pos.x, y = pos.y + 1.4, z = pos.z,
+		}).name)
+		if feet_wet or submerged then
 			local source_pos, kind = find_source_below(pos)
 			if source_pos then
 				local height = measure_column(source_pos)
 				if height > 0 then
 					stats.scan_hits = stats.scan_hits + 1
+					-- Registered even at the surface, so the column keeps
+					-- drawing its bubbles for anyone standing in the top of it.
 					register_column(source_pos, kind, height)
 					local rising = kind == "up"
-					begin_lift(player, rising)
-					-- Deadbanded on the way up because the liquid overrides
-					-- should already be holding the speed; the correction is
-					-- a floor for when they cannot (a slow client, or a
-					-- Luanti build without physics_overrides_v2).  A
-					-- whirlpool has no override helping it, so it is driven
-					-- outright.
-					if rising then
-						force_speed(player, UP_SPEED, SPEED_DEADBAND)
-					else
-						force_speed(player, -DOWN_SPEED)
-					end
-					if rising and RESTORE_AIR then
-						local max_breath = player:get_properties().breath_max or 10
-						if player:get_breath() < max_breath then
-							player:set_breath(max_breath)
+					if submerged then
+						in_column[player] = true
+						begin_lift(player, rising)
+						-- Deadbanded on the way up because the liquid
+						-- overrides should already be holding the speed; the
+						-- correction is a floor for when they cannot (a slow
+						-- client, or a Luanti build without
+						-- physics_overrides_v2).  A whirlpool has no override
+						-- helping it, so it is driven outright.
+						if rising then
+							force_speed(player, UP_SPEED, SPEED_DEADBAND)
+						else
+							force_speed(player, -DOWN_SPEED)
+						end
+						if rising and RESTORE_AIR then
+							local max_breath = player:get_properties().breath_max or 10
+							if player:get_breath() < max_breath then
+								player:set_breath(max_breath)
+							end
 						end
 					end
 				end
@@ -433,6 +451,7 @@ local function apply_column(column, dtime)
 end
 
 local object_timer = 0
+local in_column = {}
 
 core.register_globalstep(function(dtime)
 	now = now + dtime
@@ -441,7 +460,23 @@ core.register_globalstep(function(dtime)
 	-- liquid drag bleeds an injected velocity away between ticks, so the
 	-- top-up has to be as frequent as the client's own simulation -- the
 	-- same cadence mcl_potions gives levitation, and so shulker bullets.
-	scan_players()
+	for player in pairs(in_column) do
+		in_column[player] = nil
+	end
+	scan_players(in_column)
+
+	-- Players are released the instant they leave, with no grace period.
+	--
+	-- They are scanned every step, so a grace buys nothing -- and it costs a
+	-- great deal: holding gravity = 0 for 0.3s after someone shoots out of
+	-- the top of a column turns their exit arc into a coast, so they reach a
+	-- higher apex, fall back in faster, get driven to full speed again and
+	-- launch higher still.  That resonance grew with every bounce.
+	for obj, state in pairs(lifted) do
+		if state.is_player and not in_column[obj] then
+			end_lift(obj)
+		end
+	end
 
 	object_timer = object_timer + dtime
 	if object_timer < OBJECT_INTERVAL then return end
@@ -458,12 +493,13 @@ core.register_globalstep(function(dtime)
 		end
 	end
 
-	-- Release anything that has stopped being refreshed by either pass.
-	-- Timestamps rather than a per-tick set, because the two passes run at
-	-- different rates and a shared set would release entities on the steps
-	-- that had no entity pass.  Clearing a key during pairs() is well defined.
+	-- Entities only; players were released above, immediately.  Timestamps
+	-- rather than a per-tick set because the entity pass runs at a coarser
+	-- rate than this callback, so a shared set would release them on the
+	-- steps that had no entity pass.  Clearing a key during pairs() is well
+	-- defined.
 	for obj, state in pairs(lifted) do
-		if now - state.last_seen > LIFT_GRACE then
+		if not state.is_player and now - state.last_seen > LIFT_GRACE then
 			end_lift(obj)
 		end
 	end

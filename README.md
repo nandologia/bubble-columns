@@ -57,6 +57,17 @@ Two things that look like they should work and don't:
 * **Raising `up_speed` alone does nothing.** Liquid resistance clamps the climb
   to swim-up speed regardless; `liquid_fluidity` is what unlocks it.
 
+**The lift needs your head under water, not just your feet.** Breaching the
+surface at the top of a column therefore just stops the lift, and you leave on
+a normal ballistic arc — which is roughly how Minecraft ejects you. Driving on
+feet-in-water instead re-kicked the player to full speed the moment they fell
+back far enough to get their feet wet, so they bobbed at the surface forever.
+Players are also released the *instant* they leave, with no grace period:
+holding `gravity = 0` for even a third of a second after they shoot out turns
+the exit arc into a coast, so they reach a higher apex, fall back in faster and
+launch higher still. That resonance grew with every bounce. Entities keep a
+short grace because they run on the coarser cadence.
+
 Velocity injection every server step — the `mcl_potions` levitation pattern,
 and so what shulker bullets rely on — is what got this working at all, and
 remains the fallback when the liquid overrides can't hold the speed.
