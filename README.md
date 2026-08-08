@@ -35,41 +35,40 @@ A globalstep then walks that registry and does the physics. Keeping the
 registry means the expensive call — `get_objects_in_area` — scales with the
 number of live columns rather than with the number of objects in the world.
 
-**The server drives; the client only holds.** Exactly one thing controls
-vertical speed — the server, rewriting the player's velocity to the target
-every step. The client's liquid model is retuned via `physics_override`
-(Luanti 5.8+) only to stop it interfering: `liquid_fluidity` goes up so water
-resistance no longer damps the climb back to ordinary swim-up speed, and
-`liquid_sink` goes to 0 so the player holds position between updates. Neither
-of those *drives* anything.
+**The player lift is entirely client-side, and the server never touches a
+rising player's velocity.** That is the single most important thing about this
+mod, and it took several wrong turns to arrive at.
 
-**Never give the client a drive of its own.** A negative `liquid_sink` makes
-the client accelerate the player upward toward its own target while the server
-clamps them to `up_speed` twenty times a second — two controllers on one
-variable, arbitrating against a velocity reading that lags the client. That
-fight pumps energy in, and at the surface it compounds: exit faster, arc
-higher, fall back faster, plunge deeper, exit faster still. Every bounce grew,
-and no amount of clamping could win it. The mod clamps a configured negative
-value back to 0 and logs a warning.
+`add_velocity` arbitrates against `get_velocity()`, which lags the client by
+however far behind the last position update is. Rewriting velocity every step
+against a stale reading overshoots whenever the reading is low, so the client
+gets pushed past target and the next step pushes again. That produced both the
+jitter and a bounce at the surface that grew with every cycle. It needs no help
+from any other setting to happen — it is inherent to server-driving a player.
 
-Two things that look like they should work and don't:
+Instead, `physics_override` (Luanti 5.8+) retunes the client's own liquid model
+and then gets out of the way:
 
-* **`physics_override.gravity` does not lift a player in a liquid.** Luanti's
-  client uses its liquid model there, not gravity acceleration. Measured in
-  game: gravity forced to `-1.0` in a 16-deep column still gave `v.y = -0.30`,
-  still sinking. The mod sets the factor to `0` only so gravity can't claw back
-  what the lift gains.
-* **Raising `up_speed` alone did nothing** until `liquid_fluidity` was raised
-  too: liquid resistance clamps the climb to swim-up speed regardless. With
-  fluidity raised, `up_speed` is the speed control.
+* **`liquid_sink`** negative — a multiplier on liquid sink *speed*, so the
+  player rises at a constant rate with no acceleration runway to compound. The
+  client applies it continuously at its own frame rate, so it is smooth by
+  construction. **This is the climb speed control for players.**
+* **`liquid_fluidity`** slightly raised — removes some of the resistance that
+  otherwise damps the climb to ordinary swim-up speed. It only subtracts
+  damping, so it cannot drive anything. Kept modest, because high values also
+  let the player retain momentum like air and carry speed up out of the water.
+* **`gravity` = 0** — stops gravity fighting the sink. Note it cannot *lift*:
+  measured in game, gravity forced to `-1.0` in a 16-deep column still gave
+  `v.y = -0.30`, still sinking. Luanti uses the liquid model here, not gravity.
 
-**The lift is capped and tapers at the surface.** The speed correction clamps
-symmetrically — only ever *raising* it left the negative `liquid_sink` free to
-accelerate without a ceiling, and that closes a feedback loop: a deeper plunge
-gives the acceleration a longer runway, so you exit faster, arc higher, fall
-back faster and plunge deeper still. Every bounce grew. The lift also eases off
-over the last `surface_taper` nodes, so you arrive at the surface and float
-instead of being fired clear of it and falling back in.
+Approaching the surface the mod switches to a second lift state with a fraction
+of the sink, so the player eases up and floats rather than being carried clear
+and falling back in. It is a state change rather than a per-step recalculation
+because `playerphysics` serialises to player meta on every write.
+
+`up_speed` and `accel` now apply only to entities. Mobs, boats and dropped items
+are server-side objects with no client predicting them, so `add_velocity` on
+those behaves normally and they keep the eased velocity drive.
 
 **The lift needs your head under water, not just your feet.** Breaching the
 surface at the top of a column therefore just stops the lift, and you leave on
@@ -162,8 +161,8 @@ columns).
 **Working in game** as of 2026-08-08 — verified lifting a player in a 16-deep
 column in Mineclonia 37652 on Luanti 5.16.1. 76 offline checks pass.
 
-Tune `up_speed` for the climb rate and `surface_taper` for how it behaves at
-the top. Still to check: mobs, boats and dropped items in a column, a
+Tune `liquid_sink` for the climb rate and `surface_taper` / `surface_sink_scale`
+for how it behaves at the top. Still to check: mobs, boats and dropped items in a column, a
 magma whirlpool, and particle density. Not yet deployed to the Gondor server.
 
 ## Compatibility

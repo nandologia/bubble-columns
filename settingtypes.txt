@@ -3,8 +3,9 @@
 #    Highest water column a single soul sand or magma block can drive, in nodes.
 bubble_columns_max_height (Maximum column height) int 24 1 128
 
-#    Terminal upward speed inside a soul sand column, in nodes per second.
-bubble_columns_up_speed (Updraft speed) float 8.0 0.0 40.0
+#    Terminal upward speed for MOBS, BOATS AND ITEMS in a soul sand column,
+#    in nodes per second. Players are controlled by liquid_sink below.
+bubble_columns_up_speed (Updraft speed, entities) float 8.0 0.0 40.0
 
 #    Terminal downward speed inside a magma whirlpool, in nodes per second.
 bubble_columns_down_speed (Whirlpool speed) float 6.0 0.0 40.0
@@ -14,25 +15,24 @@ bubble_columns_down_speed (Whirlpool speed) float 6.0 0.0 40.0
 #    gravity multipliers below instead.
 bubble_columns_accel (Entity acceleration) float 30.0 1.0 200.0
 
-#    Multiplier on liquid sinking speed while in an updraft. 0 makes you
-#    neutrally buoyant so you hold position between velocity updates.
-#    Do NOT set this negative. A negative sink makes the CLIENT drive you
-#    upward while the server clamps you to up_speed, and the two fighting over
-#    one variable makes you bounce ever higher at the top of a column. Values
-#    below 0 are clamped to 0 with a warning in debug.txt.
-bubble_columns_liquid_sink (Updraft buoyancy) float 0.0 0.0 1.0
+#    THE CLIMB SPEED CONTROL for players. Multiplier on liquid sink speed,
+#    so negative rises. More negative is faster; -0.45 is a gentle climb.
+#    The client applies this continuously at its own frame rate, which is why
+#    the climb is smooth. The server never touches a rising player's velocity:
+#    doing so arbitrates against a reading that lags the client, which caused
+#    both jitter and a bounce that grew at the surface.
+bubble_columns_liquid_sink (Updraft climb speed) float -0.45 -3.0 0.0
 
 #    Multiplier on liquid movement resistance while in an updraft; higher
-#    means less resistance. Without this the water damps the climb back down
-#    to ordinary swim-up speed no matter what else is set. Values below 1 are
-#    unsupported by the engine.
-bubble_columns_liquid_fluidity (Updraft fluidity) float 4.0 1.0 20.0
+#    means less resistance. Keep this modest: high values also let you retain
+#    momentum like air, which carries you up out of the water. Values below 1
+#    are unsupported by the engine and are clamped to 1.
+bubble_columns_liquid_fluidity (Updraft fluidity) float 1.5 1.0 8.0
 
-#    Slack around the target speed before the server rewrites your velocity.
-#    Keep this small: the server correction IS the lift, so a wide deadband
-#    just lets you sag. It exists only to skip rewriting the velocity on steps
-#    where it has barely moved, which is what makes the climb feel jerky.
-bubble_columns_speed_deadband (Speed correction deadband) float 0.5 0.0 4.0
+#    Fraction of the climb speed still applied over the last surface_taper
+#    nodes, so you ease up to the surface and float instead of being carried
+#    clear of it and falling back in.
+bubble_columns_surface_sink_scale (Surface easing) float 0.3 0.0 1.0
 
 #    Gravity multiplier for a player in an updraft. 0 neutralises gravity so
 #    it cannot claw back what the lift gains between steps. Do NOT set this

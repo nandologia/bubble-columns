@@ -56,41 +56,38 @@ local UP_GRAVITY = setting_number("up_gravity", 0)
 -- the server re-kicking their velocity 20 times a second, which is what made
 -- it hiccup.
 --
--- liquid_sink is a multiplier on the sinking speed; 0 makes the player
--- neutrally buoyant so they hold position between velocity updates.
+-- THE PLAYER LIFT IS ENTIRELY CLIENT-SIDE.  The server never touches a
+-- player's velocity in an updraft, and that is deliberate.
 --
--- Do NOT set it negative.  A negative sink makes the *client* drive the
--- player upward towards its own target while the server clamps them to
--- UP_SPEED twenty times a second -- two controllers fighting over one
--- variable, against a velocity reading that lags the client.  That fight was
--- the energy source behind the bounce that grew with every cycle; it appeared
--- in exactly the change that introduced the negative sink, and no amount of
--- clamping could win it.  The server drives, the client holds.
+-- `add_velocity` arbitrates against `get_velocity()`, which lags the client by
+-- however far behind the last position update is.  Rewriting velocity every
+-- step against a stale reading overshoots whenever the reading is low, so the
+-- client is pushed past target, and the next step pushes again.  That is both
+-- the jitter and the energy pump behind the bounce that grew at the surface --
+-- it needs no help from any other override to happen.
 --
--- liquid_fluidity lowers the resistance that otherwise damps the climb back
--- down to ordinary swim-up speed no matter how high UP_SPEED is set.  It does
--- not drive anything by itself, so it cannot fight the server.  (Values below
--- 1 are explicitly unsupported.)
-local LIQUID_SINK = setting_number("liquid_sink", 0)
-local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 4.0)
+-- `liquid_sink` is a multiplier on the liquid sink *speed*, so a negative
+-- value rises at a constant rate with no acceleration runway to compound, and
+-- the client applies it continuously at its own frame rate.  One controller,
+-- no stale feedback, smooth by construction.  This is the speed control for
+-- players; UP_SPEED applies only to entities.
+local LIQUID_SINK = setting_number("liquid_sink", -0.45)
+-- Only removes resistance, so it cannot drive anything on its own.  Kept
+-- modest: high fluidity also makes the player retain momentum like air, which
+-- is what let them carry speed up out of the water.
+local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 1.5)
+-- Fraction of the sink applied over the last SURFACE_TAPER nodes, so the
+-- player eases up to the surface and floats instead of being carried clear of
+-- it.  Applied as a second lift state rather than a per-step recalculation --
+-- playerphysics serialises to player meta on every write.
+local SURFACE_SINK_SCALE = setting_number("surface_sink_scale", 0.3)
 
-if LIQUID_SINK < 0 then
-	core.log("warning", "[bubble_columns] liquid_sink was set to "
-		.. LIQUID_SINK .. "; clamped to 0. A negative sink makes the client "
-		.. "fight the server for control of vertical speed, which makes the "
-		.. "player bounce ever higher at the top of a column.")
-	LIQUID_SINK = 0
-end
 -- Below 1 is unsupported by the engine and silently misbehaves.
 if LIQUID_FLUIDITY < 1 then
 	LIQUID_FLUIDITY = 1
 end
--- Slack around the target before the velocity is rewritten.  Small: with
--- nothing else driving the player, this correction *is* the lift, and a wide
--- deadband would just let them sag.  It exists only to avoid rewriting the
--- velocity on steps where it has barely moved, which is what makes the climb
--- feel like a sawtooth.
-local SPEED_DEADBAND = setting_number("speed_deadband", 0.5)
+-- (There is deliberately no speed deadband any more: nothing rewrites a
+-- rising player's velocity, so there is nothing to put a deadband around.)
 -- Distance below the water surface over which the updraft eases off, in
 -- nodes.  Without this the lift runs at full speed right up to the surface
 -- and fires the player clear of it; they then fall back in and are lifted
@@ -305,8 +302,9 @@ local lifted = {}
 -- comfortably exceed OBJECT_INTERVAL.
 local LIFT_GRACE = 0.3
 
-local function begin_lift(obj, rising)
-	local want = rising and "up" or "down"
+-- `want` is "up", "up_near" (easing off below the surface) or "down".
+local function begin_lift(obj, want)
+	local rising = want ~= "down"
 	local state = lifted[obj]
 	if state then
 		state.last_seen = now
@@ -322,12 +320,16 @@ local function begin_lift(obj, rising)
 	-- gravity exactly as it is.
 	if rising then
 		if obj:is_player() then
+			local sink = LIQUID_SINK
+			if want == "up_near" then
+				sink = sink * SURFACE_SINK_SCALE
+			end
 			playerphysics.add_physics_factor(obj, "gravity", LIFT_ID, UP_GRAVITY)
-			playerphysics.add_physics_factor(obj, "liquid_sink", LIFT_ID, LIQUID_SINK)
+			playerphysics.add_physics_factor(obj, "liquid_sink", LIFT_ID, sink)
 			playerphysics.add_physics_factor(obj, "liquid_fluidity", LIFT_ID,
 				LIQUID_FLUIDITY)
-			dbg("overrides on for %s: gravity=%.2f sink=%.2f fluidity=%.2f",
-				obj:get_player_name(), UP_GRAVITY, LIQUID_SINK, LIQUID_FLUIDITY)
+			dbg("overrides on for %s (%s): gravity=%.2f sink=%.2f fluidity=%.2f",
+				obj:get_player_name(), want, UP_GRAVITY, sink, LIQUID_FLUIDITY)
 		else
 			local entity = obj:get_luaentity()
 			if entity and entity.is_mob and entity.add_physics_factor then
@@ -445,28 +447,25 @@ local function scan_players(in_column)
 					local rising = kind == "up"
 					if submerged then
 						in_column[player] = true
-						begin_lift(player, rising)
 						-- Ease off approaching the surface so the player
-						-- arrives and floats instead of being launched clear.
+						-- arrives and floats instead of being carried clear.
 						local surface_y = source_pos.y + 0.5 + height
-						local to_surface = surface_y - pos.y
-						local taper = 1
-						if rising and to_surface < SURFACE_TAPER then
-							taper = math.max(0.15, to_surface / SURFACE_TAPER)
-						end
+						local near = (surface_y - pos.y) < SURFACE_TAPER
+						begin_lift(player,
+							rising and (near and "up_near" or "up") or "down")
 						-- Deadbanded on the way up because the liquid
 						-- overrides should already be holding the speed; the
 						-- correction is a floor for when they cannot (a slow
 						-- client, or a Luanti build without
 						-- physics_overrides_v2).  A whirlpool has no override
 						-- helping it, so it is driven outright.
-						if rising then
-							-- Deadband shrinks with the taper, or the slack
-							-- would swamp the reduced target near the surface
-							-- and let the launch through anyway.
-							force_speed(player, UP_SPEED * taper,
-								SPEED_DEADBAND * taper)
-						else
+						-- Deliberately nothing for a rising player: the
+						-- liquid_sink override above is the entire lift, and
+						-- adding a server-side velocity rewrite here is what
+						-- produced both the jitter and the growing bounce.
+						-- A whirlpool has no client-side equivalent, so it is
+						-- still driven from here.
+						if not rising then
 							force_speed(player, -DOWN_SPEED)
 						end
 						if rising and RESTORE_AIR then
@@ -496,7 +495,7 @@ local function apply_column(column, dtime)
 		-- An attached object is driven by its parent; moving it here
 		-- would fight the attachment rather than carry the rider.
 		if obj:is_valid() and not obj:get_attach() and not obj:is_player() then
-			begin_lift(obj, rising)
+			begin_lift(obj, rising and "up" or "down")
 			drive_towards(obj, target, dtime)
 		end
 	end
@@ -624,7 +623,10 @@ core.register_chatcommand("bubblecheck", {
 			override.gravity or 1, override.liquid_sink or 1,
 			override.liquid_fluidity or 1)
 		local vel = player:get_velocity()
-		say("        your v.y = %.2f (target %.2f)", vel and vel.y or 0, UP_SPEED)
+		-- No target to compare against: the lift is the liquid_sink override
+		-- above, applied by the client. This v.y is the client's own result.
+		say("        your v.y = %.2f (client-driven; sink is the control)",
+			vel and vel.y or 0)
 		local live = 0
 		for _ in pairs(columns) do live = live + 1 end
 		say("live columns tracked: %d", live)

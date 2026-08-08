@@ -516,13 +516,15 @@ def test_gravity_lift():
           g.FACTOR(sinker, "gravity/bubble_columns:column") is None,
           g.FACTOR(sinker, "gravity/bubble_columns:column"))
 
-    # The thing that actually made it work in game: the player IS driven to
-    # the target speed, every step, rather than left to a gravity override.
-    check("player is driven to updraft speed", close(player._vel.y, 8),
-          player._vel.y)
-    check("player is driven to whirlpool speed", close(sinker._vel.y, -6),
-          sinker._vel.y)
-    check("entity in the same column is also driven", mob._vel.y > 0,
+    # The server must NOT touch a rising player's velocity. add_velocity
+    # arbitrates against a get_velocity() that lags the client, so rewriting
+    # it every step overshoots and pumps energy in -- the jitter and the
+    # growing surface bounce. The liquid_sink override is the whole lift.
+    check("server does NOT rewrite a rising player's velocity",
+          close(player._vel.y, 0), player._vel.y)
+    check("whirlpool player IS driven (no client-side equivalent)",
+          close(sinker._vel.y, -6), sinker._vel.y)
+    check("entity in the same column is driven server-side", mob._vel.y > 0,
           mob._vel.y)
 
     # Setting the factor writes player meta, so it must happen once on entry,
@@ -582,30 +584,21 @@ def test_liquid_overrides():
     g.RUN_STEPS(0.2, 0.05)
 
     sink = g.FACTOR(player, "liquid_sink/bubble_columns:column")
-    check("updraft makes the player neutrally buoyant", sink == 0, sink)
-    # A negative sink makes the client drive the player while the server
-    # clamps them: two controllers on one variable, which is what made the
-    # surface bounce grow. The server must be the only thing driving.
-    check("liquid_sink is NOT negative (client must not drive)",
-          sink is not None and sink >= 0, sink)
+    check("updraft sinks upward (negative liquid_sink is the lift)",
+          sink == -0.45, sink)
     check("updraft lowers liquid resistance",
-          g.FACTOR(player, "liquid_fluidity/bubble_columns:column") == 4.0,
+          g.FACTOR(player, "liquid_fluidity/bubble_columns:column") == 1.5,
           g.FACTOR(player, "liquid_fluidity/bubble_columns:column"))
     check("liquid_fluidity stays >= 1 (below 1 is unsupported)",
           g.FACTOR(player, "liquid_fluidity/bubble_columns:column") >= 1)
 
-    # Deadband: a player already at target must NOT be re-kicked.
-    player._vel = g.vector.new(0, 7.8, 0)   # target 8, deadband 0.5
-    before = player._vel.y
-    g.RUN_STEPS(0.05, 0.05)
-    check("no correction while within the deadband",
-          close(player._vel.y, before), player._vel.y)
-
-    # Far below target, the floor must still catch them.
-    player._vel = g.vector.new(0, 1.0, 0)
-    g.RUN_STEPS(0.05, 0.05)
-    check("correction fires when well below target",
-          close(player._vel.y, 8), player._vel.y)
+    # No matter how far off target, the server must never rewrite a rising
+    # player's velocity -- that stale-read rewrite is the whole failure mode.
+    for start in (0.0, 1.0, 25.0):
+        player._vel = g.vector.new(0, start, 0)
+        g.RUN_STEPS(0.15, 0.05)
+        check(f"velocity left alone when rising at {start}",
+              close(player._vel.y, start), player._vel.y)
 
     # Leaving must restore every override, not just gravity.
     player._pos = g.vector.new(50, 50, 50)
@@ -614,16 +607,12 @@ def test_liquid_overrides():
         check(f"leaving restores {attr}",
               g.FACTOR(player, f"{attr}/bubble_columns:column") is None)
 
-    # A hand-edited minetest.conf must not be able to reintroduce the bounce.
-    lua_neg = load_mod({"bubble_columns_liquid_sink": -2.0,
-                        "bubble_columns_liquid_fluidity": 0.2})
+    # Fluidity below 1 is unsupported by the engine and misbehaves silently.
+    lua_neg = load_mod({"bubble_columns_liquid_fluidity": 0.2})
     gn = lua_neg.globals()
     build_column(lua_neg, 0, 0, "mcl_nether:soul_sand", 16)
     victim = gn.MAKE_OBJECT(0, 4, 0, lua_neg.table(player=True, name="mo"))
     gn.RUN_STEPS(0.2, 0.05)
-    check("a negative liquid_sink from config is clamped to 0",
-          gn.FACTOR(victim, "liquid_sink/bubble_columns:column") == 0,
-          gn.FACTOR(victim, "liquid_sink/bubble_columns:column"))
     check("a sub-1 liquid_fluidity from config is clamped to 1",
           gn.FACTOR(victim, "liquid_fluidity/bubble_columns:column") == 1,
           gn.FACTOR(victim, "liquid_fluidity/bubble_columns:column"))
@@ -672,36 +661,36 @@ def test_surface_resonance():
     check("column still tracked while player is at the surface",
           g.bubble_columns.columns["0,0,0"] is not None)
 
-    # The clamp must be symmetric. Only ever raising the speed left the
-    # negative liquid_sink override free to accelerate without a ceiling,
-    # which is what compounded the bounce.
-    lua_c = load_mod()
-    gc = lua_c.globals()
-    build_column(lua_c, 0, 0, "mcl_nether:soul_sand", 16)
-    racer = gc.MAKE_OBJECT(0, 3, 0, lua_c.table(player=True, name="jack"))
-    racer._vel = gc.vector.new(0, 25.0, 0)     # as if the client ran away
-    gc.RUN_STEPS(0.05, 0.05)
-    check("a player moving faster than target is clamped back down",
-          close(racer._vel.y, 8), racer._vel.y)
-
-    # Taper: deep in the column full speed, near the surface much less.
+    # Taper: full sink deep in the column, a fraction of it near the surface.
     lua_t = load_mod()
     gt = lua_t.globals()
     build_column(lua_t, 0, 0, "mcl_nether:soul_sand", 16)
     deep = gt.MAKE_OBJECT(0, 3, 0, lua_t.table(player=True, name="kim"))
     gt.RUN_STEPS(0.05, 0.05)
-    check("full speed deep in the column", close(deep._vel.y, 8), deep._vel.y)
+    check("full sink deep in the column",
+          gt.FACTOR(deep, "liquid_sink/bubble_columns:column") == -0.45,
+          gt.FACTOR(deep, "liquid_sink/bubble_columns:column"))
 
     # Surface is at 0.5 + 16 = 16.5, taper starts 2.5 below it. The head sits
     # 1.4 above the feet, so it leaves the water at about y=15.1 -- stay under
     # that or there is no lift to taper.
     near = gt.MAKE_OBJECT(0, 14.8, 0, lua_t.table(player=True, name="lee"))
     gt.RUN_STEPS(0.05, 0.05)
-    check("eased off approaching the surface",
-          0 < near._vel.y < 8, near._vel.y)
-    check("still rising, not stalled", near._vel.y > 0, near._vel.y)
+    sink_near = gt.FACTOR(near, "liquid_sink/bubble_columns:column")
+    check("sink eased off approaching the surface",
+          close(sink_near, -0.45 * 0.3), sink_near)
+    check("still rising near the surface, not stalled", sink_near < 0, sink_near)
 
-    # Simulate repeated surface bounces: energy must not accumulate.
+    # The taper is a state change, not a per-step recalculation --
+    # playerphysics serialises to player meta on every write.
+    calls = gt.PHYSICS_CALL_COUNT()
+    gt.RUN_STEPS(1.0, 0.05)
+    check("holding position does not rewrite player meta every step",
+          gt.PHYSICS_CALL_COUNT() == calls,
+          f"{calls} -> {gt.PHYSICS_CALL_COUNT()}")
+
+    # Repeated surface bounces: nothing may accumulate. With the server never
+    # touching a rising player's velocity there is no mechanism left to.
     peaks = []
     for _ in range(4):
         player._pos = g.vector.new(0, 2.0, 0)      # falls back in, submerged
@@ -710,10 +699,8 @@ def test_surface_resonance():
         peaks.append(player._vel.y)
         player._pos = g.vector.new(0, 4.0, 0)      # breaches again
         g.RUN_STEPS(0.05, 0.05)
-    check("re-entry speed is identical every bounce (no growth)",
-          all(close(p, peaks[0]) for p in peaks), peaks)
-    check("re-entry speed is capped at the target, not compounding",
-          peaks[0] <= 8 + 1e-9, peaks[0])
+    check("re-entry velocity is never rewritten, so cannot compound",
+          all(close(p, -6.0) for p in peaks), peaks)
 
 
 def test_join_cleanup():
@@ -755,7 +742,7 @@ def test_bubblecheck_command():
     for stage in ("stage 1 ok", "stage 3 ok"):
         check(f"reports {stage}", stage in text, text)
     check("reports the physics overrides", "gravity=0.00" in text, text)
-    check("reports the achieved speed against target", "target" in text, text)
+    check("reports the achieved climb speed", "your v.y" in text, text)
 
     # Unknown player must be handled, not crash.
     ok, text = cmd.func("nobody")
