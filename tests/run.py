@@ -152,12 +152,20 @@ function object_mt:get_player_name() return self._name or "stub" end
 function object_mt:get_luaentity() return self._luaentity end
 function object_mt:get_pos() return self._pos end
 function object_mt:get_physics_override()
-	-- Mirrors playerphysics: the override is the product of all gravity factors.
-	local product = 1
-	for k, v in pairs(self._factors) do
-		if k:sub(1, 8) == "gravity/" then product = product * v end
+	-- Mirrors playerphysics: each attribute is the product of its factors.
+	local function product(attribute)
+		local p = 1
+		local prefix = attribute .. "/"
+		for k, v in pairs(self._factors) do
+			if k:sub(1, #prefix) == prefix then p = p * v end
+		end
+		return p
 	end
-	return {gravity = product}
+	return {
+		gravity = product("gravity"),
+		liquid_sink = product("liquid_sink"),
+		liquid_fluidity = product("liquid_fluidity"),
+	}
 end
 
 function MAKE_OBJECT(x, y, z, opts)
@@ -562,6 +570,58 @@ def test_gravity_lift():
           g2.FACTOR(stuck, "gravity/bubble_columns:column") is None)
 
 
+def test_liquid_overrides():
+    """The client's own liquid model is what makes the climb smooth and lets
+    it exceed ordinary swim-up speed; the deadband stops the server fighting
+    it every step, which is what the player felt as hiccuping."""
+    print("liquid model overrides")
+    lua = load_mod()
+    g = lua.globals()
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 16)
+    player = g.MAKE_OBJECT(0, 4, 0, lua.table(player=True, name="gail"))
+    g.RUN_STEPS(0.2, 0.05)
+
+    check("updraft sinks upward (negative liquid_sink)",
+          g.FACTOR(player, "liquid_sink/bubble_columns:column") == -1.6,
+          g.FACTOR(player, "liquid_sink/bubble_columns:column"))
+    check("updraft lowers liquid resistance",
+          g.FACTOR(player, "liquid_fluidity/bubble_columns:column") == 3.0,
+          g.FACTOR(player, "liquid_fluidity/bubble_columns:column"))
+    check("liquid_fluidity stays >= 1 (below 1 is unsupported)",
+          g.FACTOR(player, "liquid_fluidity/bubble_columns:column") >= 1)
+
+    # Deadband: a player already near target must NOT be re-kicked.
+    player._vel = g.vector.new(0, 7.0, 0)   # target 8, deadband 1.5
+    before = player._vel.y
+    g.RUN_STEPS(0.05, 0.05)
+    check("no correction while within the deadband",
+          close(player._vel.y, before), player._vel.y)
+
+    # Far below target, the floor must still catch them.
+    player._vel = g.vector.new(0, 1.0, 0)
+    g.RUN_STEPS(0.05, 0.05)
+    check("correction fires when well below target",
+          close(player._vel.y, 8), player._vel.y)
+
+    # Leaving must restore every override, not just gravity.
+    player._pos = g.vector.new(50, 50, 50)
+    g.RUN_STEPS(0.5, 0.05)
+    for attr in ("gravity", "liquid_sink", "liquid_fluidity"):
+        check(f"leaving restores {attr}",
+              g.FACTOR(player, f"{attr}/bubble_columns:column") is None)
+
+    # A whirlpool must not get the lifting overrides.
+    lua2 = load_mod()
+    g2 = lua2.globals()
+    build_column(lua2, 0, 0, "mcl_nether:magma", 16)
+    sinker = g2.MAKE_OBJECT(0, 4, 0, lua2.table(player=True, name="hank"))
+    g2.RUN_STEPS(0.2, 0.05)
+    check("whirlpool does not touch liquid_sink",
+          g2.FACTOR(sinker, "liquid_sink/bubble_columns:column") is None)
+    check("whirlpool is driven outright, no deadband",
+          close(sinker._vel.y, -6), sinker._vel.y)
+
+
 def test_join_cleanup():
     print("crash-safety on join")
     lua = load_mod()
@@ -600,8 +660,8 @@ def test_bubblecheck_command():
     check("runs with a live column", ok is True)
     for stage in ("stage 1 ok", "stage 3 ok"):
         check(f"reports {stage}", stage in text, text)
-    check("reports the gravity override", "physics_override.gravity = 0" in text,
-          text)
+    check("reports the physics overrides", "gravity=0.00" in text, text)
+    check("reports the achieved speed against target", "target" in text, text)
 
     # Unknown player must be handled, not crash.
     ok, text = cmd.func("nobody")
@@ -638,7 +698,7 @@ def main():
     for test in (test_column_detection, test_max_height, test_updraft_physics,
                  test_whirlpool_physics, test_standing_on_the_source_block,
                  test_selectivity, test_breath,
-                 test_gravity_lift, test_join_cleanup,
+                 test_gravity_lift, test_liquid_overrides, test_join_cleanup,
                  test_bubblecheck_command, test_expiry, test_particles):
         test()
         print()

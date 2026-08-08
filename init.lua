@@ -49,6 +49,24 @@ local ACCEL = setting_number("accel", 30)
 -- every server step, which is what mcl_potions' levitation does and why that
 -- effect works underwater.
 local UP_GRAVITY = setting_number("up_gravity", 0)
+
+-- The client's own liquid model, retuned per-player while in an updraft
+-- (physics_overrides_v2, Luanti 5.8+).  This is what makes the climb smooth:
+-- the client moves the player continuously at its own frame rate, instead of
+-- the server re-kicking their velocity 20 times a second, which is what made
+-- it hiccup.
+--
+-- liquid_sink is a multiplier on the sinking speed, so a negative value sinks
+-- upward.  liquid_fluidity lowers the resistance that was otherwise damping
+-- the climb back down to ordinary swim-up speed no matter how high UP_SPEED
+-- was set.  (Values below 1 are explicitly unsupported for fluidity.)
+local LIQUID_SINK = setting_number("liquid_sink", -1.6)
+local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 3.0)
+-- Only correct the velocity when it has fallen this far below target.  With
+-- the overrides doing the work the correction should rarely fire at all; it
+-- is a floor, not the drive, and firing it every step is what causes the
+-- sawtooth the player feels as hiccuping.
+local SPEED_DEADBAND = setting_number("speed_deadband", 1.5)
 -- Minecraft's updraft keeps you breathing; its whirlpool does not.
 local RESTORE_AIR = setting_bool("restore_air", true)
 -- Traces the whole pipeline to debug.txt: column found -> object in area ->
@@ -268,7 +286,11 @@ local function begin_lift(obj, rising)
 	if rising then
 		if obj:is_player() then
 			playerphysics.add_physics_factor(obj, "gravity", LIFT_ID, UP_GRAVITY)
-			dbg("gravity factor %.2f for %s", UP_GRAVITY, obj:get_player_name())
+			playerphysics.add_physics_factor(obj, "liquid_sink", LIFT_ID, LIQUID_SINK)
+			playerphysics.add_physics_factor(obj, "liquid_fluidity", LIFT_ID,
+				LIQUID_FLUIDITY)
+			dbg("overrides on for %s: gravity=%.2f sink=%.2f fluidity=%.2f",
+				obj:get_player_name(), UP_GRAVITY, LIQUID_SINK, LIQUID_FLUIDITY)
 		else
 			local entity = obj:get_luaentity()
 			if entity and entity.is_mob and entity.add_physics_factor then
@@ -283,6 +305,8 @@ local function end_lift(obj)
 	if not obj:is_valid() then return end
 	if obj:is_player() then
 		playerphysics.remove_physics_factor(obj, "gravity", LIFT_ID)
+		playerphysics.remove_physics_factor(obj, "liquid_sink", LIFT_ID)
+		playerphysics.remove_physics_factor(obj, "liquid_fluidity", LIFT_ID)
 	else
 		local entity = obj:get_luaentity()
 		if entity and entity.is_mob and entity.remove_physics_factor then
@@ -323,10 +347,12 @@ end
 -- shape mcl_potions' levitation uses, and why that effect works underwater.
 -- Only ever speeds an object up in the intended direction; something already
 -- moving faster that way is left alone.
-local function force_speed(obj, target)
+local function force_speed(obj, target, deadband)
 	local vel = obj:get_velocity()
 	if not vel then return end
-	if (target > 0 and vel.y < target) or (target < 0 and vel.y > target) then
+	deadband = deadband or 0
+	if (target > 0 and vel.y < target - deadband)
+		or (target < 0 and vel.y > target + deadband) then
 		obj:add_velocity({x = 0, y = target - vel.y, z = 0})
 	end
 end
@@ -363,7 +389,17 @@ local function scan_players()
 					register_column(source_pos, kind, height)
 					local rising = kind == "up"
 					begin_lift(player, rising)
-					force_speed(player, rising and UP_SPEED or -DOWN_SPEED)
+					-- Deadbanded on the way up because the liquid overrides
+					-- should already be holding the speed; the correction is
+					-- a floor for when they cannot (a slow client, or a
+					-- Luanti build without physics_overrides_v2).  A
+					-- whirlpool has no override helping it, so it is driven
+					-- outright.
+					if rising then
+						force_speed(player, UP_SPEED, SPEED_DEADBAND)
+					else
+						force_speed(player, -DOWN_SPEED)
+					end
 					if rising and RESTORE_AIR then
 						local max_breath = player:get_properties().breath_max or 10
 						if player:get_breath() < max_breath then
@@ -493,11 +529,14 @@ core.register_chatcommand("bubblecheck", {
 			end
 		end
 
-		say("stage 5: gravity hold = %s", tostring(lifted[player]))
+		local hold = lifted[player]
+		say("stage 5: gravity hold = %s", hold and hold.kind or "nil")
 		local override = player:get_physics_override()
-		say("        physics_override.gravity = %.2f", override.gravity or 1)
+		say("        gravity=%.2f liquid_sink=%.2f liquid_fluidity=%.2f",
+			override.gravity or 1, override.liquid_sink or 1,
+			override.liquid_fluidity or 1)
 		local vel = player:get_velocity()
-		say("        your v.y = %.2f", vel and vel.y or 0)
+		say("        your v.y = %.2f (target %.2f)", vel and vel.y or 0, UP_SPEED)
 		local live = 0
 		for _ in pairs(columns) do live = live + 1 end
 		say("live columns tracked: %d", live)

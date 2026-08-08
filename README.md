@@ -35,25 +35,31 @@ A globalstep then walks that registry and does the physics. Keeping the
 registry means the expensive call — `get_objects_in_area` — scales with the
 number of live columns rather than with the number of objects in the world.
 
-**Players are driven every server step, and that cadence is the whole trick.**
-A player is moved by the *client*, which runs its own liquid model every frame
-and bleeds an injected velocity away within a tick or two. Topping their
-vertical speed up on a 0.1s cadence is not enough; doing it every step is. This
-is exactly what `mcl_potions` does for levitation — and so what shulker bullets
-rely on — which is why that effect lifts you underwater when other approaches
-don't.
+**The client's own liquid model does the lifting.** While a player is in an
+updraft the mod retunes it for them via `physics_override` (Luanti 5.8+):
+`liquid_sink` goes *negative*, so they sink upward, and `liquid_fluidity` goes
+up, lowering the resistance that otherwise damps any climb back down to
+ordinary swim-up speed. The client then moves them continuously at its own
+frame rate, which is what makes it smooth.
+
+The server also tops their vertical velocity up, but only when it has fallen
+past `speed_deadband` below target — a floor, not the drive. Correcting every
+step is what makes the climb feel jerky: the server kicks at 20 Hz while the
+client damps at frame rate, and the sawtooth is felt as hiccuping.
 
 Two things that look like they should work and don't:
 
 * **`physics_override.gravity` does not lift a player in a liquid.** Luanti's
-  client uses its liquid movement model there (`movement_liquid_sink` /
-  `movement_liquid_fluidity`), not gravity acceleration. Measured in game:
-  gravity forced to `-1.0` in a 16-deep column still gave `v.y = -0.30`, still
-  sinking. The mod sets the factor to `0` only so gravity can't claw back what
-  the lift gains between steps.
-* **Easing towards the target speed** never accumulates against that drag. The
-  drive sets the velocity outright, only ever in the intended direction, so
-  something already moving faster that way is left alone.
+  client uses its liquid model there, not gravity acceleration. Measured in
+  game: gravity forced to `-1.0` in a 16-deep column still gave `v.y = -0.30`,
+  still sinking. The mod sets the factor to `0` only so gravity can't claw back
+  what the lift gains.
+* **Raising `up_speed` alone does nothing.** Liquid resistance clamps the climb
+  to swim-up speed regardless; `liquid_fluidity` is what unlocks it.
+
+Velocity injection every server step — the `mcl_potions` levitation pattern,
+and so what shulker bullets rely on — is what got this working at all, and
+remains the fallback when the liquid overrides can't hold the speed.
 
 Entities (mobs, boats, dropped items) are simulated server-side where
 `add_velocity` behaves normally, so they stay on the coarser cadence and are
@@ -102,10 +108,14 @@ settings menu.
 | setting | default | what |
 |---|---|---|
 | `bubble_columns_max_height` | 24 | tallest column a single block can drive |
-| `bubble_columns_up_speed` | 8.0 | terminal updraft speed, nodes/s |
+| `bubble_columns_liquid_sink` | -1.6 | **main updraft speed control**; negative sinks upward |
+| `bubble_columns_liquid_fluidity` | 3.0 | lowers liquid resistance so the climb isn't clamped |
+| `bubble_columns_speed_deadband` | 1.5 | how far below target before the server corrects |
+| `bubble_columns_up_speed` | 8.0 | velocity floor for the updraft, nodes/s |
 | `bubble_columns_down_speed` | 6.0 | terminal whirlpool speed, nodes/s |
 | `bubble_columns_accel` | 30.0 | how sharply an *entity* reaches that speed, nodes/s² |
 | `bubble_columns_up_gravity` | 0.0 | *player* gravity multiplier in an updraft; 0 = neutral, NOT a lift |
+| `bubble_columns_soul_soil_too` | false | let soul soil make columns too (Minecraft says no) |
 | `bubble_columns_restore_air` | true | updraft refills the player's air |
 | `bubble_columns_debug` | false | trace the pipeline to `debug.txt` |
 
@@ -124,11 +134,12 @@ columns).
 ## Status
 
 **Working in game** as of 2026-08-08 — verified lifting a player in a 16-deep
-column in Mineclonia 37652 on Luanti 5.16.1. 65 offline checks pass.
+column in Mineclonia 37652 on Luanti 5.16.1. 76 offline checks pass.
 
-Still to do: tune `up_speed` and the particle density in `spawn_particles` by
-feel, confirm mobs / boats / dropped items behave, and try a magma whirlpool.
-Not yet deployed to the Gondor server.
+The liquid-model overrides that make the climb fast and smooth are **not yet
+confirmed in game** — tune `liquid_sink` first if the speed is wrong, not
+`up_speed`. Also still to check: mobs, boats and dropped items in a column, a
+magma whirlpool, and particle density. Not yet deployed to the Gondor server.
 
 ## Compatibility
 
