@@ -49,8 +49,12 @@ function WORLD_CLEAR() WORLD = {} end
 
 -- Only the groups the mod actually consults.
 local NODE_GROUPS = {
-	["mcl_core:water_source"]  = {water = 3, liquid = 3},
-	["mcl_core:water_flowing"] = {water = 3, liquid = 3},
+	-- liquid_source is what separates a source block from flowing water, and
+	-- columns only propagate through sources -- so the stub must carry it.
+	["mcl_core:water_source"]  = {water = 3, liquid = 3, liquid_source = 1},
+	["mcl_core:water_flowing"] = {water = 3, liquid = 3, liquid_flowing = 1},
+	-- River water copies the water source definition, so it counts too.
+	["mclx_core:river_water_source"] = {water = 3, liquid = 3, liquid_source = 1},
 	["mcl_nether:soul_sand"]   = {soul_block = 1},
 	-- Soul soil really does live in a different mod to soul sand, and really
 	-- does share the soul_block group with it. Both matter to this mod.
@@ -330,6 +334,106 @@ def test_column_detection():
           entry and entry.height)
 
 
+def test_source_water_only():
+    """Minecraft columns propagate through water SOURCE blocks only and stop
+    dead at flowing water."""
+    print("source water only")
+    lua = load_mod()
+    g = lua.globals()
+
+    # Flowing water directly above the block: no column at all.
+    g.WORLD_SET(0, 0, 0, "mcl_nether:soul_sand")
+    for i in range(1, 5):
+        g.WORLD_SET(0, i, 0, "mcl_core:water_flowing")
+    g.RUN_ABM(0, 0, 0)
+    check("flowing water makes no column",
+          g.bubble_columns.columns["0,0,0"] is None)
+
+    # Source water that turns to flowing partway up: column stops there.
+    build_column(lua, 6, 0, "mcl_nether:soul_sand", 6)
+    g.WORLD_SET(6, 4, 0, "mcl_core:water_flowing")
+    g.RUN_ABM(6, 0, 0)
+    entry = g.bubble_columns.columns["6,0,0"]
+    check("column stops at flowing water", entry and entry.height == 3,
+          entry and entry.height)
+
+    # River water is a source too, so it must work.
+    g.WORLD_SET(12, 0, 0, "mcl_nether:soul_sand")
+    for i in range(1, 5):
+        g.WORLD_SET(12, i, 0, "mclx_core:river_water_source")
+    g.RUN_ABM(12, 0, 0)
+    entry = g.bubble_columns.columns["12,0,0"]
+    check("river water counts as a source", entry and entry.height == 4,
+          entry and entry.height)
+
+    # A player standing in flowing water above a column is outside it.
+    build_column(lua, 20, 0, "mcl_nether:soul_sand", 4)
+    g.WORLD_SET(20, 3, 0, "mcl_core:water_flowing")
+    swimmer = g.MAKE_OBJECT(20, 3, 0, lua.table(player=True, name="pat"))
+    g.RUN_STEPS(0.2, 0.05)
+    check("player in flowing water above the break is not lifted",
+          g.FACTOR(swimmer, "liquid_sink/bubble_columns:column") is None,
+          g.FACTOR(swimmer, "liquid_sink/bubble_columns:column"))
+
+
+def test_whirlpool_spiral():
+    """The descending bubbles are drawn as a rotating vortex."""
+    print("whirlpool spiral")
+    lua = load_mod()
+    g = lua.globals()
+    build_column(lua, 0, 0, "mcl_nether:magma", 8)
+    g.PARTICLES_CLEAR()
+    g.RUN_ABM(0, 0, 0)
+
+    spawners = list(g.PARTICLES.values())
+    check("one spawner per spiral arm", len(spawners) == 5, len(spawners))
+
+    import math as _m
+
+    def centre(s):
+        return ((s.minpos.x + s.maxpos.x) / 2, (s.minpos.z + s.maxpos.z) / 2)
+
+    radii = [_m.hypot(*centre(s)) for s in spawners]
+    check("every arm sits on the spiral radius",
+          all(close(r, 0.36, 1e-3) for r in radii), radii)
+
+    # Tangential velocity: perpendicular to the arm's radius vector.
+    s = spawners[0]
+    dx, dz = centre(s)
+    dot = dx * s.minvel.x + dz * s.minvel.z
+    check("launch velocity is tangential, not radial", close(dot, 0, 1e-6), dot)
+
+    # Inward acceleration: opposite the radius vector, so the path curves.
+    inward = dx * s.minacc.x + dz * s.minacc.z
+    check("acceleration points back at the axis", inward < 0, inward)
+    check("bubbles descend", s.minvel.y < 0 and s.maxvel.y < 0)
+
+    # Arms must be evenly spread, not stacked on one side.
+    angles = sorted(_m.atan2(cz, cx) % (2 * _m.pi)
+                    for cx, cz in (centre(p) for p in spawners))
+    gaps = [(angles[(i + 1) % 5] - angles[i]) % (2 * _m.pi) for i in range(5)]
+    check("arms evenly spaced around the axis",
+          all(close(gp, 2 * _m.pi / 5, 1e-6) for gp in gaps), gaps)
+
+    # The ring must rotate between re-arms, or the vortex looks frozen.
+    g.RUN_STEPS(3.0, 0.1)
+    g.PARTICLES_CLEAR()
+    g.RUN_ABM(0, 0, 0)
+    later = list(g.PARTICLES.values())[0]
+    a0 = _m.atan2(dz, dx)
+    a1 = _m.atan2(*reversed(centre(later)))
+    check("the vortex rotates between re-arms", not close(a0, a1, 1e-3),
+          f"{a0} -> {a1}")
+
+    # Rising columns stay a single plain spawner.
+    lua2 = load_mod()
+    g2 = lua2.globals()
+    build_column(lua2, 0, 0, "mcl_nether:soul_sand", 8)
+    g2.PARTICLES_CLEAR()
+    g2.RUN_ABM(0, 0, 0)
+    check("updraft is still one straight spawner", len(g2.PARTICLES) == 1)
+
+
 def test_max_height():
     print("max height cap")
     lua = load_mod({"bubble_columns_max_height": 5})
@@ -454,7 +558,10 @@ def test_breath():
 
     g.RUN_STEPS(0.5, 0.05)
     check("updraft refills a player's air", rising._breath == 10, rising._breath)
-    check("whirlpool does NOT refill air", sinking._breath == 3, sinking._breath)
+    # Minecraft replenishes air in bubble columns generally, not just rising
+    # ones. A whirlpool stays dangerous by pinning you against burning magma.
+    check("whirlpool refills air too, as in Minecraft",
+          sinking._breath == 10, sinking._breath)
     check("non-player breath is left alone", mob._breath == 3, mob._breath)
 
     lua2 = load_mod({"bubble_columns_restore_air": False})
@@ -890,7 +997,8 @@ def test_particles():
 
 def main():
     print(f"bubble_columns offline tests  (lua {lupa.LuaRuntime().lua_implementation})\n")
-    for test in (test_column_detection, test_max_height, test_updraft_physics,
+    for test in (test_column_detection, test_source_water_only,
+                 test_whirlpool_spiral, test_max_height, test_updraft_physics,
                  test_whirlpool_physics, test_standing_on_the_source_block,
                  test_selectivity, test_breath,
                  test_gravity_lift, test_liquid_overrides, test_surface_resonance,

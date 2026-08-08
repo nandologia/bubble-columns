@@ -105,7 +105,9 @@ end
 -- easing off with the head still 2.6 nodes under -- the setting did not mean
 -- what it said, and the slowdown started far too early.
 local SURFACE_TAPER = setting_number("surface_taper", 1.0)
--- Minecraft's updraft keeps you breathing; its whirlpool does not.
+-- Both directions replenish air, as in Minecraft -- the wiki describes it for
+-- bubble columns generally, not just rising ones.  A whirlpool is still
+-- dangerous because it pins you against a magma block, which burns.
 local RESTORE_AIR = setting_bool("restore_air", true)
 -- Traces the whole pipeline to debug.txt: column found -> object in area ->
 -- velocity driven.  Off by default; noisy by design when on.
@@ -147,6 +149,20 @@ local OBJECT_INTERVAL = 0.1
 -- How often a live column re-arms its particle spawner.
 local PARTICLE_PERIOD = 2.0
 
+-- Whirlpool vortex shape.  More arms is a denser, smoother swirl at the cost
+-- of one particlespawner each.
+local SPIRAL_ARMS = math.max(1, math.floor(setting_number("spiral_arms", 5)))
+-- How far out from the axis the arms sit.  Beyond ~0.45 they leave the node.
+local SPIRAL_RADIUS = setting_number("spiral_radius", 0.36)
+-- Tangential launch speed: how fast a bubble travels around the axis.
+local SPIRAL_SPIN = setting_number("spiral_spin", 2.0)
+-- Inward acceleration that bends the tangent into an orbit instead of letting
+-- bubbles fly off on a straight line.
+local SPIRAL_PULL = setting_number("spiral_pull", 9.0)
+-- Radians per second the whole ring of arms is rotated between re-arms, so the
+-- vortex turns rather than sitting in one fixed arrangement.
+local SPIRAL_TURN = setting_number("spiral_turn", 1.1)
+
 -- Monotonic seconds since load, accumulated from globalstep dtime.  Used
 -- instead of os.time() so expiry follows server time, not wall clock.
 local now = 0
@@ -156,13 +172,22 @@ local function is_water(name)
 	return core.get_item_group(name, "water") > 0
 end
 
+-- Columns propagate through water *source* blocks only, stopping at flowing
+-- water, exactly as they do in Minecraft.  Tested by group rather than by
+-- name so river water (mclx_core:river_water_source, which copies the water
+-- source definition) counts too.
+local function is_column_water(name)
+	return core.get_item_group(name, "water") > 0
+		and core.get_item_group(name, "liquid_source") > 0
+end
+
 -- Height of the unbroken water column sitting directly on `pos`.
 local function measure_column(pos)
 	local height = 0
 	while height < MAX_HEIGHT do
 		local node = core.get_node({x = pos.x, y = pos.y + 1 + height, z = pos.z})
 		-- "ignore" means unloaded map; stop rather than guess.
-		if node.name == "ignore" or not is_water(node.name) then
+		if node.name == "ignore" or not is_column_water(node.name) then
 			break
 		end
 		height = height + 1
@@ -170,36 +195,95 @@ local function measure_column(pos)
 	return height
 end
 
-local function spawn_particles(pos, kind, height)
-	local rising = kind == "up"
-	local vel = rising and 1.5 or -1.5
+-- Fields every bubble shares, whichever pattern it is drawn in.
+local function bubble_common(fields)
+	fields.minsize = 0.7
+	fields.maxsize = 2.4
+	fields.collisiondetection = false
+	-- Shipped by mcl_player for the underwater breath trail.  Luanti's media
+	-- namespace is flat, so no dependency is needed to use it.
+	fields.texture = "mcl_particles_bubble.png"
+	fields.glow = 2
+	-- Overlaps the next re-arm so the column does not visibly pulse.
+	fields.time = PARTICLE_PERIOD + 0.5
+	return fields
+end
+
+-- Rising column: a straight fizz up the whole shaft.
+local function spawn_up_particles(pos, height)
 	-- Bubbles keep travelling on their own velocity after they spawn, so
 	-- filling the column right to the surface threw them well clear of the
 	-- water.  Stop the spawn volume a node short and keep speed x lifetime
 	-- under that node, so they die at the surface rather than above it.
 	local top = math.max(0.5, height - 1)
-	core.add_particlespawner({
+	core.add_particlespawner(bubble_common({
 		-- Enough to read as a column without flooding the client on a
 		-- reef full of magma blocks.
 		amount = math.min(4 * height, 60),
-		-- Overlaps the next re-arm so the column does not visibly pulse.
-		time = PARTICLE_PERIOD + 0.5,
 		minpos = {x = pos.x - 0.45, y = pos.y + 0.5, z = pos.z - 0.45},
 		maxpos = {x = pos.x + 0.45, y = pos.y + 0.5 + top, z = pos.z + 0.45},
-		minvel = {x = -0.2, y = vel, z = -0.2},
-		maxvel = {x = 0.2, y = vel * 1.6, z = 0.2},
+		minvel = {x = -0.2, y = 1.5, z = -0.2},
+		maxvel = {x = 0.2, y = 2.4, z = 0.2},
 		minacc = {x = -0.4, y = 0, z = -0.4},
 		maxacc = {x = 0.4, y = 0, z = 0.4},
 		minexptime = 0.25,
 		maxexptime = 0.4,
-		minsize = 0.7,
-		maxsize = 2.4,
-		collisiondetection = false,
-		-- Shipped by mcl_player for the underwater breath trail.  Luanti's
-		-- media namespace is flat, so no dependency is needed to use it.
-		texture = "mcl_particles_bubble.png",
-		glow = 2,
-	})
+	}))
+end
+
+-- Whirlpool: a descending vortex, drawn as several arms around the axis.
+--
+-- One spawner cannot do this.  `attract` looks like the tool for it, but it
+-- only sets a particle's *birth* velocity -- there is no sustained centripetal
+-- force in the API, and a single spawner's `vel`/`acc` ranges are cartesian,
+-- so every particle in it travels one straight or parabolic path.
+--
+-- So the swirl is built from SPIRAL_ARMS narrow spawners spaced around the
+-- circle.  Each launches its bubbles along the tangent at its own angle, with
+-- a constant acceleration pointing back at the axis, which bends the path into
+-- an arc instead of letting it fly off on the tangent.  Arc plus descent reads
+-- as a helix.  The whole ring is rotated a little on every re-arm so the
+-- pattern turns rather than standing still.
+local function spawn_down_particles(pos, height)
+	local top = math.max(0.5, height - 0.5)
+	local per_arm = math.max(2, math.floor(math.min(4 * height, 60) / SPIRAL_ARMS))
+	local phase = now * SPIRAL_TURN
+
+	for arm = 0, SPIRAL_ARMS - 1 do
+		local angle = phase + arm * (2 * math.pi / SPIRAL_ARMS)
+		local ca, sa = math.cos(angle), math.sin(angle)
+		local px = pos.x + ca * SPIRAL_RADIUS
+		local pz = pos.z + sa * SPIRAL_RADIUS
+		-- Tangent at this angle, anticlockwise seen from above.
+		local tx, tz = -sa * SPIRAL_SPIN, ca * SPIRAL_SPIN
+		-- Back towards the axis, so the tangent curves into an orbit.
+		local ax, az = -ca * SPIRAL_PULL, -sa * SPIRAL_PULL
+
+		core.add_particlespawner(bubble_common({
+			amount = per_arm,
+			-- A narrow box, not the full column width: the arm's position
+			-- is the whole point, so it must not be smeared across the shaft.
+			minpos = {x = px - 0.05, y = pos.y + 0.5, z = pz - 0.05},
+			maxpos = {x = px + 0.05, y = pos.y + 0.5 + top, z = pz + 0.05},
+			minvel = {x = tx, y = -1.2, z = tz},
+			maxvel = {x = tx, y = -2.0, z = tz},
+			minacc = {x = ax, y = 0, z = az},
+			maxacc = {x = ax, y = 0, z = az},
+			-- Longer-lived than the rising bubbles: a particle has to survive
+			-- long enough to trace a visible arc, and going down it cannot
+			-- escape the water at the top.
+			minexptime = 0.5,
+			maxexptime = 0.9,
+		}))
+	end
+end
+
+local function spawn_particles(pos, kind, height)
+	if kind == "up" then
+		spawn_up_particles(pos, height)
+	else
+		spawn_down_particles(pos, height)
+	end
 end
 
 -- Counters, reported by /bubblecheck.  They are the difference between "the
@@ -245,7 +329,7 @@ local function find_source_below(pos)
 		local kind = SOURCES[name]
 		if kind then
 			return vector.round(p), kind
-		elseif name == "ignore" or not is_water(name) then
+		elseif name == "ignore" or not is_column_water(name) then
 			return nil
 		end
 	end
@@ -476,7 +560,7 @@ local function scan_players(in_column)
 						-- jitter and a bounce that grew each cycle, because
 						-- add_velocity arbitrates against a get_velocity()
 						-- reading that lags the client.
-						if rising and RESTORE_AIR then
+						if RESTORE_AIR then
 							local max_breath = player:get_properties().breath_max or 10
 							if player:get_breath() < max_breath then
 								player:set_breath(max_breath)
@@ -594,7 +678,7 @@ core.register_chatcommand("bubblecheck", {
 			if SOURCES[n] then
 				found_source, source_pos = n, vector.round(p)
 				break
-			elseif not is_water(n) then
+			elseif not is_column_water(n) then
 				say("stage 1 FAIL: hit %s at %d before finding a source block",
 					n, y - i)
 				if n == "mcl_blackstone:soul_soil" then

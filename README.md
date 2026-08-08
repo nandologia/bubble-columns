@@ -133,6 +133,20 @@ flat, so it needs no dependency and the mod ships no textures of its own.
 
 ## Behaviour notes
 
+* **Columns run through water *source* blocks only**, stopping at flowing
+  water, as in Minecraft. Tested by group, so river water counts too. (Vanilla
+  players exploit this with kelp, which converts flowing water to source.)
+* **Both directions replenish air.** The wiki describes this for bubble columns
+  generally, not just rising ones. A whirlpool is still dangerous because it
+  pins you against a magma block, which burns.
+* **The whirlpool is drawn as a rotating vortex.** One spawner cannot do this:
+  `attract` only sets a particle's *birth* velocity, and there is no sustained
+  centripetal force in the API, so every particle in a spawner travels one
+  straight or parabolic path. The swirl is instead built from several narrow
+  spawners spaced around the axis, each launching along its own tangent with a
+  constant acceleration pointing back at the centre, which bends the path into
+  an arc. Arc plus descent reads as a helix, and the whole ring is rotated a
+  little on each refresh so it turns.
 * **Soul soil does not make a column**, matching Minecraft. Note that Soul Sand
   is `mcl_nether:soul_sand` while Soul Soil is `mcl_blackstone:soul_soil` —
   different mods, no alias, sharing only the `soul_block` group, and near
@@ -189,9 +203,17 @@ carry them clear of the surface, and work on mobs. The shipped values for
 `liquid_sink`, `surface_taper` and `surface_sink_scale` are the ones that felt
 right in play, not guesses.
 
-Not yet verified: boats and dropped items in a column, and magma whirlpools
-(the whirlpool is the one path still driven server-side, so it is the most
-likely to need work). Not yet deployed to the Gondor server.
+Verified since: dropped items, and boats sinking (but not breaking) in a
+whirlpool — which matches Minecraft, where a boat "shakes and eventually sinks".
+
+Not yet verified: the source-water restriction, air in whirlpools, and the
+spiral vortex, all added after the last in-game session. Not deployed to the
+Gondor server.
+
+Known divergences from vanilla, all deliberate: water-breathing mobs do not
+suffocate in columns; there is no ambient sound; and the surface taper
+suppresses vanilla's repeated ~1 block bounce at the top (`/bubbletaper 0`
+restores it).
 
 ## Compatibility
 
