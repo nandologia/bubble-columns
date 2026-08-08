@@ -32,8 +32,14 @@ local MAX_HEIGHT = setting_number("max_height", 24)
 -- Terminal vertical speed, m/s.  Both are magnitudes.
 local UP_SPEED = setting_number("up_speed", 8)
 local DOWN_SPEED = setting_number("down_speed", 6)
--- How hard an object is pulled towards that speed, m/s^2.
+-- How hard an entity is pulled towards that speed, m/s^2.  Entities only;
+-- players are moved by the gravity factors below instead.
 local ACCEL = setting_number("accel", 30)
+-- Player gravity multipliers while in a column.  Negative lifts; the engine
+-- applies it through the client's own movement code, so it survives liquid
+-- drag and works where a velocity push does not.
+local UP_GRAVITY = setting_number("up_gravity", -1.0)
+local DOWN_GRAVITY = setting_number("down_gravity", 3.0)
 -- Minecraft's updraft keeps you breathing; its whirlpool does not.
 local RESTORE_AIR = setting_bool("restore_air", true)
 -- Traces the whole pipeline to debug.txt: column found -> object in area ->
@@ -139,31 +145,42 @@ core.register_abm({
 	end,
 })
 
--- Cancelling gravity is not optional garnish -- it is what makes the lift
--- work at all.  Driving velocity alone leaves the engine reapplying gravity
--- and liquid drag every client step, which eats the added velocity faster
--- than a 0.1s server tick can top it back up.  mcl_potions' levitation
--- effect solves the same problem the same way: zero the gravity factor, then
--- drive the velocity.
+-- Players and everything else need completely different treatment.
+--
+-- A player is moved by the *client*, which runs its own gravity and liquid
+-- drag every frame.  `add_velocity` on a player is a single nudge into that
+-- simulation -- the drag eats it between server ticks, and lua_api.md notes
+-- it does nothing at all during `free_move` (fly), which is easy to be in
+-- inside a creative world.  So players are not pushed: their gravity is
+-- *inverted* via a physics override, and the client's own movement code
+-- lifts them.  Working with the engine instead of against it.
+--
+-- Entities (mobs, boats, dropped items) are simulated server-side, where
+-- add_velocity does exactly what it says, so those keep the velocity drive.
 local LIFT_ID = "bubble_columns:column"
 
--- Objects currently having their gravity cancelled.  Tracked because
--- playerphysics serialises to player meta on every call, so the factor must
--- be set on entry and cleared on exit -- never per tick.
+-- What each object is currently being held at: "up", "down", or absent.
+-- Tracked because playerphysics serialises into player meta on every call,
+-- so the factor must be written on entry and cleared on exit, never per tick.
 local lifted = {}
 
-local function begin_lift(obj)
-	if lifted[obj] then return end
-	lifted[obj] = true
+local function begin_lift(obj, rising)
+	local want = rising and "up" or "down"
+	if lifted[obj] == want then return end
+	lifted[obj] = want
 	if obj:is_player() then
-		playerphysics.add_physics_factor(obj, "gravity", LIFT_ID, 0)
-	else
+		-- Negative gravity means the engine accelerates them upward; water
+		-- drag caps the speed on its own, much as it does when falling.
+		playerphysics.add_physics_factor(obj, "gravity", LIFT_ID,
+			rising and UP_GRAVITY or DOWN_GRAVITY)
+		dbg("gravity factor %.2f for %s",
+			rising and UP_GRAVITY or DOWN_GRAVITY, obj:get_player_name())
+	elseif rising then
 		local entity = obj:get_luaentity()
 		if entity and entity.is_mob and entity.add_physics_factor then
 			entity:add_physics_factor("fall_speed", LIFT_ID, 0)
 		end
 	end
-	dbg("lift on for %s", obj:is_player() and obj:get_player_name() or "entity")
 end
 
 local function end_lift(obj)
@@ -212,20 +229,25 @@ local function apply_column(column, dtime, present)
 	local rising = column.kind == "up"
 	local target = rising and UP_SPEED or -DOWN_SPEED
 
-	for _, obj in ipairs(core.get_objects_in_area(minp, maxp)) do
+	local found = core.get_objects_in_area(minp, maxp)
+	dbg("%s column at %s h=%d: %d object(s) in area",
+		column.kind, core.pos_to_string(pos), column.height, #found)
+
+	for _, obj in ipairs(found) do
 		-- An attached object is driven by its parent; moving it here
 		-- would fight the attachment rather than carry the rider.
 		if obj:is_valid() and not obj:get_attach() then
 			present[obj] = true
-			-- Only updrafts fight gravity; a whirlpool has it as an ally.
-			if rising then
-				begin_lift(obj)
-			end
-			local before = drive_towards(obj, target, dtime)
-			if before then
-				dbg("%s in %s column: v.y %.2f -> target %.2f",
-					obj:is_player() and obj:get_player_name() or "entity",
-					column.kind, before, target)
+			begin_lift(obj, rising)
+			if obj:is_player() then
+				-- Client-side movement; the gravity override does the
+				-- work.  Pushing velocity here as well would only be
+				-- damped away and would break during fly.
+				local vel = obj:get_velocity()
+				dbg("player %s v.y=%.2f", obj:get_player_name(),
+					vel and vel.y or 0/0)
+			else
+				drive_towards(obj, target, dtime)
 			end
 			if rising and RESTORE_AIR and obj:is_player() then
 				local max_breath = obj:get_properties().breath_max or 10
@@ -268,8 +290,82 @@ core.register_globalstep(function(dtime)
 	end
 end)
 
+-- Walks the whole pipeline for wherever the player is standing and reports
+-- which stage fails, so a column that "does nothing" can be diagnosed in
+-- game rather than by reading debug.txt after the fact.
+core.register_chatcommand("bubblecheck", {
+	description = "Diagnose the bubble column at your feet",
+	func = function(name)
+		local player = core.get_player_by_name(name)
+		if not player then return false, "no such player" end
+
+		local pos = player:get_pos()
+		local out = {"--- bubblecheck ---"}
+		local function say(fmt, ...)
+			table.insert(out, string.format(fmt, ...))
+		end
+
+		say("you: %s", core.pos_to_string(vector.round(pos)))
+
+		local feet = core.get_node(pos).name
+		say("node at your feet: %s (water group %d)", feet,
+			core.get_item_group(feet, "water"))
+
+		-- Stage 1: is there a source block under an unbroken run of water?
+		local found_source, source_pos
+		local y = math.floor(pos.y + 0.5)
+		for i = 0, MAX_HEIGHT do
+			local p = {x = pos.x, y = y - i, z = pos.z}
+			local n = core.get_node(p).name
+			if SOURCES[n] then
+				found_source, source_pos = n, vector.round(p)
+				break
+			elseif not is_water(n) then
+				say("stage 1 FAIL: hit %s at %d before finding a source block",
+					n, y - i)
+				break
+			end
+		end
+		if found_source then
+			say("stage 1 ok: %s at %s (%s column)", found_source,
+				core.pos_to_string(source_pos), SOURCES[found_source])
+			say("stage 2: measured height = %d", measure_column(source_pos))
+			local registered = columns[core.hash_node_position(source_pos)]
+			say("stage 3 %s: column %s in the live registry",
+				registered and "ok" or "FAIL",
+				registered and "IS" or "is NOT")
+			if registered then
+				local minp = {x = source_pos.x - 0.5, y = source_pos.y + 0.5,
+					z = source_pos.z - 0.5}
+				local maxp = {x = source_pos.x + 0.5,
+					y = source_pos.y + 0.5 + registered.height,
+					z = source_pos.z + 0.5}
+				local n = #core.get_objects_in_area(minp, maxp)
+				say("stage 4 %s: %d object(s) inside the column box",
+					n > 0 and "ok" or "FAIL", n)
+			end
+		end
+
+		say("stage 5: gravity hold = %s", tostring(lifted[player]))
+		local override = player:get_physics_override()
+		say("        physics_override.gravity = %.2f", override.gravity or 1)
+		local vel = player:get_velocity()
+		say("        your v.y = %.2f", vel and vel.y or 0)
+		say("live columns tracked: %d", (function()
+			local c = 0
+			for _ in pairs(columns) do c = c + 1 end
+			return c
+		end)())
+		say("NOTE: if gravity is right but you do not move, you are flying;")
+		say("      press K to leave fly mode and try again.")
+
+		return true, table.concat(out, "\n")
+	end,
+})
+
 -- Exposed for tests/run.py, which drives the ABM and globalstep directly.
 bubble_columns = {
 	columns = columns,
 	measure_column = measure_column,
+	lifted = lifted,
 }

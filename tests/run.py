@@ -29,11 +29,16 @@ GLOBALSTEPS = {}
 JOIN_CALLBACKS = {}
 LEAVE_CALLBACKS = {}
 LOGS = {}
+CHATCOMMANDS = {}
+PLAYERS_BY_NAME = {}
 PHYSICS_CALLS = 0
 
 -- vector ------------------------------------------------------------------
 vector = {}
 function vector.new(x, y, z) return {x = x or 0, y = y or 0, z = z or 0} end
+function vector.round(a)
+	return vector.new(math.floor(a.x + 0.5), math.floor(a.y + 0.5), math.floor(a.z + 0.5))
+end
 
 -- world -------------------------------------------------------------------
 local function key(p)
@@ -86,6 +91,8 @@ function core.register_globalstep(f) table.insert(GLOBALSTEPS, f) end
 function core.register_on_joinplayer(f) table.insert(JOIN_CALLBACKS, f) end
 function core.register_on_leaveplayer(f) table.insert(LEAVE_CALLBACKS, f) end
 function core.log(_, msg) table.insert(LOGS, msg) end
+function core.register_chatcommand(name, def) CHATCOMMANDS[name] = def end
+function core.get_player_by_name(n) return PLAYERS_BY_NAME[n] end
 function core.pos_to_string(p)
 	return "(" .. p.x .. "," .. p.y .. "," .. p.z .. ")"
 end
@@ -132,6 +139,15 @@ function object_mt:get_breath() return self._breath end
 function object_mt:set_breath(b) self._breath = b end
 function object_mt:get_player_name() return self._name or "stub" end
 function object_mt:get_luaentity() return self._luaentity end
+function object_mt:get_pos() return self._pos end
+function object_mt:get_physics_override()
+	-- Mirrors playerphysics: the override is the product of all gravity factors.
+	local product = 1
+	for k, v in pairs(self._factors) do
+		if k:sub(1, 8) == "gravity/" then product = product * v end
+	end
+	return {gravity = product}
+end
 
 function MAKE_OBJECT(x, y, z, opts)
 	opts = opts or {}
@@ -146,6 +162,9 @@ function MAKE_OBJECT(x, y, z, opts)
 		_name = opts.name,
 		_factors = {},
 	}, object_mt)
+	if opts.player and opts.name then
+		PLAYERS_BY_NAME[opts.name] = obj
+	end
 	if opts.mob then
 		-- Mobs take physics factors through the entity, not playerphysics.
 		obj._luaentity = {
@@ -424,13 +443,21 @@ def test_gravity_lift():
     mob = g.MAKE_OBJECT(0, 2, 0, lua.table(mob=True))
 
     g.RUN_STEPS(0.5, 0.05)
-    check("updraft zeroes the player's gravity factor",
-          g.FACTOR(player, "gravity/bubble_columns:column") == 0,
+    check("updraft INVERTS the player's gravity (engine does the lifting)",
+          g.FACTOR(player, "gravity/bubble_columns:column") == -1.0,
           g.FACTOR(player, "gravity/bubble_columns:column"))
     check("updraft zeroes a mob's fall_speed factor",
           g.MOB_FACTOR(mob, "fall_speed/bubble_columns:column") == 0)
-    check("whirlpool does NOT cancel gravity (it needs it)",
-          g.FACTOR(sinker, "gravity/bubble_columns:column") is None)
+    check("whirlpool increases the player's gravity",
+          g.FACTOR(sinker, "gravity/bubble_columns:column") == 3.0,
+          g.FACTOR(sinker, "gravity/bubble_columns:column"))
+
+    # The whole point of the rewrite: a player must NOT be velocity-pushed,
+    # because the client damps it and it is a no-op during fly.
+    check("player is not velocity-pushed", close(player._vel.y, 0),
+          player._vel.y)
+    check("entity in the same column IS velocity-pushed", mob._vel.y > 0,
+          mob._vel.y)
 
     # Setting the factor writes player meta, so it must happen once on entry,
     # not on every one of the ~10 ticks that just elapsed.
@@ -461,7 +488,7 @@ def test_gravity_lift():
     stuck = g2.MAKE_OBJECT(0, 2, 0, lua2.table(player=True, name="carol"))
     g2.RUN_STEPS(0.5, 0.05)
     check("player is lifted while the column lives",
-          g2.FACTOR(stuck, "gravity/bubble_columns:column") == 0)
+          g2.FACTOR(stuck, "gravity/bubble_columns:column") == -1.0)
     g2.RUN_STEPS(5.0, 0.1)
     check("an expiring column releases the player it was lifting",
           g2.FACTOR(stuck, "gravity/bubble_columns:column") is None)
@@ -480,6 +507,37 @@ def test_join_cleanup():
     g.RUN_JOIN(player)
     check("joining clears a stranded zero-gravity factor",
           g.FACTOR(player, "gravity/bubble_columns:column") is None)
+
+
+def test_bubblecheck_command():
+    """The in-game diagnostic must never itself throw -- it is what gets run
+    when nothing else works."""
+    print("/bubblecheck diagnostic")
+    lua = load_mod()
+    g = lua.globals()
+    cmd = g.CHATCOMMANDS["bubblecheck"]
+    check("command is registered", cmd is not None)
+
+    # No column anywhere, player in open air: must still report, not error.
+    player = g.MAKE_OBJECT(0, 2, 0, lua.table(player=True, name="erin"))
+    ok, text = cmd.func("erin")
+    check("runs with no column present", ok is True and text is not None)
+    check("reports the failing stage", "stage 1 FAIL" in text, text)
+
+    # Full working column.
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 4)
+    g.RUN_ABM(0, 0, 0)
+    g.RUN_STEPS(0.5, 0.05)
+    ok, text = cmd.func("erin")
+    check("runs with a live column", ok is True)
+    for stage in ("stage 1 ok", "stage 3 ok", "stage 4 ok"):
+        check(f"reports {stage}", stage in text, text)
+    check("reports the gravity override", "physics_override.gravity = -1" in text,
+          text)
+
+    # Unknown player must be handled, not crash.
+    ok, text = cmd.func("nobody")
+    check("unknown player is handled", ok is False)
 
 
 def test_particles():
@@ -511,8 +569,8 @@ def main():
     print(f"bubble_columns offline tests  (lua {lupa.LuaRuntime().lua_implementation})\n")
     for test in (test_column_detection, test_max_height, test_updraft_physics,
                  test_whirlpool_physics, test_selectivity, test_breath,
-                 test_gravity_lift, test_join_cleanup, test_expiry,
-                 test_particles):
+                 test_gravity_lift, test_join_cleanup,
+                 test_bubblecheck_command, test_expiry, test_particles):
         test()
         print()
 
