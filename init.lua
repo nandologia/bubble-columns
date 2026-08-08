@@ -429,18 +429,23 @@ local function scan_players(in_column)
 	for _, player in ipairs(core.get_connected_players()) do
 		local pos = player:get_pos()
 		local feet_wet = is_water(core.get_node(pos).name)
-		-- Head submersion, not feet, decides whether the lift applies.
-		--
-		-- Driving whenever the feet touched water meant that breaching the
-		-- surface at the top re-kicked the player to full speed the instant
-		-- they fell back far enough to get their feet wet, so they bobbed
-		-- there indefinitely.  Requiring the head to be under means the lift
-		-- simply stops once they break the surface and they leave on a
-		-- normal ballistic arc, which is also how Minecraft ejects you.
 		local submerged = is_water(core.get_node({
 			x = pos.x, y = pos.y + 1.4, z = pos.z,
 		}).name)
-		if feet_wet or submerged then
+		-- Any part in the water keeps the lift, rather than requiring the
+		-- head under.  The head sits 1.4 nodes above the feet, so gating on
+		-- it cut the lift out well over a node early and left the player
+		-- short of the surface.
+		--
+		-- This is safe to widen only because the lift is a client-side
+		-- physics override rather than a server-side velocity rewrite: the
+		-- engine applies it solely while the player is actually in liquid, so
+		-- it ends by itself as they clear the water, and there is no
+		-- server/client arbitration left to pump energy into a bounce.  The
+		-- same widening with a velocity drive is what made them bob
+		-- indefinitely before.
+		local in_water = feet_wet or submerged
+		if in_water then
 			local source_pos, kind = find_source_below(pos)
 			if source_pos then
 				local height = measure_column(source_pos)
@@ -450,7 +455,7 @@ local function scan_players(in_column)
 					-- drawing its bubbles for anyone standing in the top of it.
 					register_column(source_pos, kind, height)
 					local rising = kind == "up"
-					if submerged then
+					if in_water then
 						in_column[player] = true
 						-- Ease off approaching the surface so the player
 						-- arrives and floats instead of being carried clear.

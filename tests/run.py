@@ -644,15 +644,26 @@ def test_surface_resonance():
     check("submerged player is lifted",
           g.FACTOR(player, "gravity/bubble_columns:column") == 0)
 
-    # Head at y+1.4 = 5.4 -> node 5 -> air. Feet still wet at node 4.
+    # Feet at node 4 (water), head at 5.4 -> node 5 -> air. Still lifted: the
+    # lift runs while ANY part is wet, which is the extra node of push needed
+    # to actually clear the surface.
     player._pos = g.vector.new(0, 4.0, 0)
     player._vel = g.vector.new(0, 6.0, 0)
+    g.RUN_STEPS(0.05, 0.05)
+    check("still lifted with only the feet in water (the extra node)",
+          g.FACTOR(player, "liquid_sink/bubble_columns:column") is not None,
+          g.FACTOR(player, "liquid_sink/bubble_columns:column"))
+
+    # Fully clear of the water: feet at node 5, air.
+    player._pos = g.vector.new(0, 5.0, 0)
     g.RUN_STEPS(0.05, 0.05)   # exactly one step
-    check("released within ONE step of breaching, no grace",
+    check("released within ONE step of leaving the water, no grace",
           g.FACTOR(player, "gravity/bubble_columns:column") is None,
           g.FACTOR(player, "gravity/bubble_columns:column"))
     check("liquid_sink released too",
           g.FACTOR(player, "liquid_sink/bubble_columns:column") is None)
+    check("velocity untouched on the way out",
+          close(player._vel.y, 6.0), player._vel.y)
     check("not re-driven once the head is clear",
           close(player._vel.y, 6.0), player._vel.y)
 
@@ -697,7 +708,7 @@ def test_surface_resonance():
         player._vel = g.vector.new(0, -6.0, 0)
         g.RUN_STEPS(0.1, 0.05)
         peaks.append(player._vel.y)
-        player._pos = g.vector.new(0, 4.0, 0)      # breaches again
+        player._pos = g.vector.new(0, 5.0, 0)      # fully clears the water
         g.RUN_STEPS(0.05, 0.05)
     check("re-entry velocity is never rewritten, so cannot compound",
           all(close(p, -6.0) for p in peaks), peaks)

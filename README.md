@@ -70,12 +70,15 @@ because `playerphysics` serialises to player meta on every write.
 are server-side objects with no client predicting them, so `add_velocity` on
 those behaves normally and they keep the eased velocity drive.
 
-**The lift needs your head under water, not just your feet.** Breaching the
-surface at the top of a column therefore just stops the lift, and you leave on
-a normal ballistic arc — which is roughly how Minecraft ejects you. Driving on
-feet-in-water instead re-kicked the player to full speed the moment they fell
-back far enough to get their feet wet, so they bobbed at the surface forever.
-Players are also released the *instant* they leave, with no grace period:
+**The lift runs while any part of you is in water**, feet included, so it
+carries you the last node clear of the surface rather than cutting out with
+your head 1.4 nodes short of it. That is only safe because the lift is a
+client-side override: the engine applies it solely while you are actually in
+liquid, so it ends by itself, and there is no server/client arbitration left to
+pump energy into a bounce. The same widening alongside a velocity drive is what
+made the player bob at the surface indefinitely.
+
+Players are released the *instant* they leave the water, with no grace period:
 holding `gravity = 0` for even a third of a second after they shoot out turns
 the exit arc into a coast, so they reach a higher apex, fall back in faster and
 launch higher still. That resonance grew with every bounce. Entities keep a
