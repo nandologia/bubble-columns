@@ -175,12 +175,15 @@ columns).
 
 ## Status
 
-**Working in game** as of 2026-08-08 — verified lifting a player in a 16-deep
-column in Mineclonia 37652 on Luanti 5.16.1. 76 offline checks pass.
+**Working in game** as of 2026-08-08 — Mineclonia 37652 on Luanti 5.16.1.
+Verified: soul sand updrafts lift the player smoothly at the shipped defaults,
+carry them clear of the surface, and work on mobs. The shipped values for
+`liquid_sink`, `surface_taper` and `surface_sink_scale` are the ones that felt
+right in play, not guesses.
 
-Tune `liquid_sink` for the climb rate and `surface_taper` / `surface_sink_scale`
-for how it behaves at the top. Still to check: mobs, boats and dropped items in a column, a
-magma whirlpool, and particle density. Not yet deployed to the Gondor server.
+Not yet verified: boats and dropped items in a column, and magma whirlpools
+(the whirlpool is the one path still driven server-side, so it is the most
+likely to need work). Not yet deployed to the Gondor server.
 
 ## Compatibility
 
