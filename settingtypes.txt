@@ -16,3 +16,7 @@ bubble_columns_accel (Acceleration) float 30.0 1.0 200.0
 #    Refill the player's air while they ride a soul sand column, as in
 #    Minecraft. Magma whirlpools never refill air whatever this is set to.
 bubble_columns_restore_air (Updraft refills air) bool true
+
+#    Trace column detection and physics to debug.txt. Very noisy; for
+#    diagnosing a column that does not seem to do anything.
+bubble_columns_debug (Debug logging) bool false

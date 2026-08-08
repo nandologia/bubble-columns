@@ -26,6 +26,10 @@ OBJECTS = {}        -- list of stub objects
 PARTICLES = {}      -- every core.add_particlespawner def, in order
 ABMS = {}
 GLOBALSTEPS = {}
+JOIN_CALLBACKS = {}
+LEAVE_CALLBACKS = {}
+LOGS = {}
+PHYSICS_CALLS = 0
 
 -- vector ------------------------------------------------------------------
 vector = {}
@@ -79,6 +83,25 @@ function core.add_particlespawner(def)
 end
 function core.register_abm(def) table.insert(ABMS, def) end
 function core.register_globalstep(f) table.insert(GLOBALSTEPS, f) end
+function core.register_on_joinplayer(f) table.insert(JOIN_CALLBACKS, f) end
+function core.register_on_leaveplayer(f) table.insert(LEAVE_CALLBACKS, f) end
+function core.log(_, msg) table.insert(LOGS, msg) end
+function core.pos_to_string(p)
+	return "(" .. p.x .. "," .. p.y .. "," .. p.z .. ")"
+end
+
+-- playerphysics ------------------------------------------------------------
+-- Real one serialises into player meta; here we just record the factors so a
+-- test can assert they are set on entry and cleared on exit.
+playerphysics = {}
+function playerphysics.add_physics_factor(player, attribute, id, value)
+	player._factors[attribute .. "/" .. id] = value
+	PHYSICS_CALLS = PHYSICS_CALLS + 1
+end
+function playerphysics.remove_physics_factor(player, attribute, id)
+	player._factors[attribute .. "/" .. id] = nil
+	PHYSICS_CALLS = PHYSICS_CALLS + 1
+end
 
 function core.get_objects_in_area(minp, maxp)
 	local found = {}
@@ -107,6 +130,8 @@ end
 function object_mt:get_properties() return {breath_max = self._breath_max or 10} end
 function object_mt:get_breath() return self._breath end
 function object_mt:set_breath(b) self._breath = b end
+function object_mt:get_player_name() return self._name or "stub" end
+function object_mt:get_luaentity() return self._luaentity end
 
 function MAKE_OBJECT(x, y, z, opts)
 	opts = opts or {}
@@ -118,9 +143,31 @@ function MAKE_OBJECT(x, y, z, opts)
 		_valid = opts.valid,
 		_breath = opts.breath or 10,
 		_breath_max = opts.breath_max,
+		_name = opts.name,
+		_factors = {},
 	}, object_mt)
+	if opts.mob then
+		-- Mobs take physics factors through the entity, not playerphysics.
+		obj._luaentity = {
+			is_mob = true,
+			factors = {},
+			add_physics_factor = function(self, field, id, value)
+				self.factors[field .. "/" .. id] = value
+			end,
+			remove_physics_factor = function(self, field, id)
+				self.factors[field .. "/" .. id] = nil
+			end,
+		}
+	end
 	table.insert(OBJECTS, obj)
 	return obj
+end
+
+function FACTOR(obj, key) return obj._factors[key] end
+function MOB_FACTOR(obj, key) return obj._luaentity.factors[key] end
+function PHYSICS_CALL_COUNT() return PHYSICS_CALLS end
+function RUN_JOIN(obj)
+	for _, f in ipairs(JOIN_CALLBACKS) do f(obj) end
 end
 
 function OBJECTS_CLEAR() OBJECTS = {} end
@@ -361,6 +408,80 @@ def test_expiry():
     check("an expired column stops pushing", close(obj._vel.y, 0), obj._vel.y)
 
 
+def test_gravity_lift():
+    """The bug that made the first version do nothing in game: driving
+    velocity while the engine kept reapplying gravity and liquid drag."""
+    print("gravity cancellation")
+    lua = load_mod()
+    g = lua.globals()
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 4)
+    build_column(lua, 8, 0, "mcl_nether:magma", 4)
+    g.RUN_ABM(0, 0, 0)
+    g.RUN_ABM(8, 0, 0)
+
+    player = g.MAKE_OBJECT(0, 2, 0, lua.table(player=True, name="alice"))
+    sinker = g.MAKE_OBJECT(8, 2, 0, lua.table(player=True, name="bob"))
+    mob = g.MAKE_OBJECT(0, 2, 0, lua.table(mob=True))
+
+    g.RUN_STEPS(0.5, 0.05)
+    check("updraft zeroes the player's gravity factor",
+          g.FACTOR(player, "gravity/bubble_columns:column") == 0,
+          g.FACTOR(player, "gravity/bubble_columns:column"))
+    check("updraft zeroes a mob's fall_speed factor",
+          g.MOB_FACTOR(mob, "fall_speed/bubble_columns:column") == 0)
+    check("whirlpool does NOT cancel gravity (it needs it)",
+          g.FACTOR(sinker, "gravity/bubble_columns:column") is None)
+
+    # Setting the factor writes player meta, so it must happen once on entry,
+    # not on every one of the ~10 ticks that just elapsed.
+    calls = g.PHYSICS_CALL_COUNT()
+    g.RUN_STEPS(1.0, 0.05)
+    check("gravity factor is not rewritten every tick",
+          g.PHYSICS_CALL_COUNT() == calls, f"{calls} -> {g.PHYSICS_CALL_COUNT()}")
+
+    # Leave the column: gravity must come back.
+    player._pos = g.vector.new(30, 30, 30)
+    g.RUN_STEPS(0.5, 0.05)
+    check("leaving the column restores the player's gravity",
+          g.FACTOR(player, "gravity/bubble_columns:column") is None)
+    check("leaving the column restores a mob's fall speed",
+          g.MOB_FACTOR(mob, "fall_speed/bubble_columns:column") == 0,
+          "mob still inside, should be untouched")
+
+    mob._pos = g.vector.new(30, 30, 30)
+    g.RUN_STEPS(0.5, 0.05)
+    check("mob leaving the column restores its fall speed",
+          g.MOB_FACTOR(mob, "fall_speed/bubble_columns:column") is None)
+
+    # A column expiring under a stationary player must also release them.
+    lua2 = load_mod()
+    g2 = lua2.globals()
+    build_column(lua2, 0, 0, "mcl_nether:soul_sand", 4)
+    g2.RUN_ABM(0, 0, 0)
+    stuck = g2.MAKE_OBJECT(0, 2, 0, lua2.table(player=True, name="carol"))
+    g2.RUN_STEPS(0.5, 0.05)
+    check("player is lifted while the column lives",
+          g2.FACTOR(stuck, "gravity/bubble_columns:column") == 0)
+    g2.RUN_STEPS(5.0, 0.1)
+    check("an expiring column releases the player it was lifting",
+          g2.FACTOR(stuck, "gravity/bubble_columns:column") is None)
+
+
+def test_join_cleanup():
+    print("crash-safety on join")
+    lua = load_mod()
+    g = lua.globals()
+    player = g.MAKE_OBJECT(0, 2, 0, lua.table(player=True, name="dave"))
+    # Simulate a factor stranded in player meta by a crash mid-column.
+    g.playerphysics.add_physics_factor(player, "gravity",
+                                       "bubble_columns:column", 0)
+    check("precondition: stranded zero-gravity factor",
+          g.FACTOR(player, "gravity/bubble_columns:column") == 0)
+    g.RUN_JOIN(player)
+    check("joining clears a stranded zero-gravity factor",
+          g.FACTOR(player, "gravity/bubble_columns:column") is None)
+
+
 def test_particles():
     print("particles")
     lua = load_mod()
@@ -390,7 +511,8 @@ def main():
     print(f"bubble_columns offline tests  (lua {lupa.LuaRuntime().lua_implementation})\n")
     for test in (test_column_detection, test_max_height, test_updraft_physics,
                  test_whirlpool_physics, test_selectivity, test_breath,
-                 test_expiry, test_particles):
+                 test_gravity_lift, test_join_cleanup, test_expiry,
+                 test_particles):
         test()
         print()
 

@@ -36,6 +36,15 @@ local DOWN_SPEED = setting_number("down_speed", 6)
 local ACCEL = setting_number("accel", 30)
 -- Minecraft's updraft keeps you breathing; its whirlpool does not.
 local RESTORE_AIR = setting_bool("restore_air", true)
+-- Traces the whole pipeline to debug.txt: column found -> object in area ->
+-- velocity driven.  Off by default; noisy by design when on.
+local DEBUG = setting_bool("debug", false)
+
+local function dbg(fmt, ...)
+	if DEBUG then
+		core.log("action", "[bubble_columns] " .. string.format(fmt, ...))
+	end
+end
 
 -- Soul *soil* deliberately absent: in Minecraft it has no bubble column, and
 -- mcl_nether puts both it and soul sand in the `soul_block` group, so the
@@ -116,6 +125,8 @@ core.register_abm({
 		local kind = SOURCES[node.name]
 		if not kind then return end
 		local height = measure_column(pos)
+		dbg("abm hit %s at %s -> kind=%s height=%d", node.name,
+			core.pos_to_string(pos), kind, height)
 		if height == 0 then return end
 
 		columns[core.hash_node_position(pos)] = {
@@ -127,6 +138,57 @@ core.register_abm({
 		spawn_particles(pos, kind, height)
 	end,
 })
+
+-- Cancelling gravity is not optional garnish -- it is what makes the lift
+-- work at all.  Driving velocity alone leaves the engine reapplying gravity
+-- and liquid drag every client step, which eats the added velocity faster
+-- than a 0.1s server tick can top it back up.  mcl_potions' levitation
+-- effect solves the same problem the same way: zero the gravity factor, then
+-- drive the velocity.
+local LIFT_ID = "bubble_columns:column"
+
+-- Objects currently having their gravity cancelled.  Tracked because
+-- playerphysics serialises to player meta on every call, so the factor must
+-- be set on entry and cleared on exit -- never per tick.
+local lifted = {}
+
+local function begin_lift(obj)
+	if lifted[obj] then return end
+	lifted[obj] = true
+	if obj:is_player() then
+		playerphysics.add_physics_factor(obj, "gravity", LIFT_ID, 0)
+	else
+		local entity = obj:get_luaentity()
+		if entity and entity.is_mob and entity.add_physics_factor then
+			entity:add_physics_factor("fall_speed", LIFT_ID, 0)
+		end
+	end
+	dbg("lift on for %s", obj:is_player() and obj:get_player_name() or "entity")
+end
+
+local function end_lift(obj)
+	lifted[obj] = nil
+	if not obj:is_valid() then return end
+	if obj:is_player() then
+		playerphysics.remove_physics_factor(obj, "gravity", LIFT_ID)
+	else
+		local entity = obj:get_luaentity()
+		if entity and entity.is_mob and entity.remove_physics_factor then
+			entity:remove_physics_factor("fall_speed", LIFT_ID)
+		end
+	end
+	dbg("lift off for %s", obj:is_player() and obj:get_player_name() or "entity")
+end
+
+-- A physics factor lives in player meta, so a crash mid-column would
+-- otherwise strand someone with permanent zero gravity.  Clear it on join.
+core.register_on_joinplayer(function(player)
+	playerphysics.remove_physics_factor(player, "gravity", LIFT_ID)
+end)
+
+core.register_on_leaveplayer(function(player)
+	lifted[player] = nil
+end)
 
 -- Nudge `obj` towards `target` vertical speed without ever overshooting it.
 local function drive_towards(obj, target, dtime)
@@ -140,9 +202,10 @@ local function drive_towards(obj, target, dtime)
 		diff = -limit
 	end
 	obj:add_velocity({x = 0, y = diff, z = 0})
+	return vel.y
 end
 
-local function apply_column(column, dtime)
+local function apply_column(column, dtime, present)
 	local pos = column.pos
 	local minp = {x = pos.x - 0.5, y = pos.y + 0.5, z = pos.z - 0.5}
 	local maxp = {x = pos.x + 0.5, y = pos.y + 0.5 + column.height, z = pos.z + 0.5}
@@ -153,7 +216,17 @@ local function apply_column(column, dtime)
 		-- An attached object is driven by its parent; moving it here
 		-- would fight the attachment rather than carry the rider.
 		if obj:is_valid() and not obj:get_attach() then
-			drive_towards(obj, target, dtime)
+			present[obj] = true
+			-- Only updrafts fight gravity; a whirlpool has it as an ally.
+			if rising then
+				begin_lift(obj)
+			end
+			local before = drive_towards(obj, target, dtime)
+			if before then
+				dbg("%s in %s column: v.y %.2f -> target %.2f",
+					obj:is_player() and obj:get_player_name() or "entity",
+					column.kind, before, target)
+			end
 			if rising and RESTORE_AIR and obj:is_player() then
 				local max_breath = obj:get_properties().breath_max or 10
 				if obj:get_breath() < max_breath then
@@ -165,6 +238,7 @@ local function apply_column(column, dtime)
 end
 
 local object_timer = 0
+local present = {}
 
 core.register_globalstep(function(dtime)
 	now = now + dtime
@@ -173,11 +247,23 @@ core.register_globalstep(function(dtime)
 	local elapsed = object_timer
 	object_timer = 0
 
+	for obj in pairs(present) do
+		present[obj] = nil
+	end
+
 	for hash, column in pairs(columns) do
 		if column.expires < now then
 			columns[hash] = nil
 		else
-			apply_column(column, elapsed)
+			apply_column(column, elapsed, present)
+		end
+	end
+
+	-- Anything that was being lifted and is no longer in any column gets
+	-- its gravity back.  Clearing a key during pairs() is well defined.
+	for obj in pairs(lifted) do
+		if not present[obj] then
+			end_lift(obj)
 		end
 	end
 end)
