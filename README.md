@@ -95,11 +95,15 @@ fast is braked to the whirlpool's speed rather than accelerated past it.
 
 ## Tuning the climb speed
 
-    /bubblespeed          -- show the current speed
+    /bubblespeed          -- show the current climb speed
     /bubblespeed -2.2     -- try a new one immediately
+    /bubbletaper          -- show how it eases off at the surface
+    /bubbletaper 0.5 0.7  -- ease later (0.5 nodes) and less (keep 70%)
 
-Climb speed can only really be judged by riding a column, so it is adjustable
-in game without a restart. Negative rises; more negative is faster. Players
+Climb speed and surface behaviour can only really be judged by riding a
+column, so both are adjustable in game without a restart. The taper distance is
+measured from your **head**, so it means the water you can actually see above
+you. Negative rises; more negative is faster. Players
 already in a column pick the new value up on the next step. The command prints
 the `minetest.conf` line to keep a value you like. Needs the `server` priv.
 
@@ -148,7 +152,7 @@ settings menu.
 | `bubble_columns_liquid_sink` | -1.6 | **main updraft speed control**; negative sinks upward |
 | `bubble_columns_liquid_fluidity` | 3.0 | lowers liquid resistance so the climb isn't clamped |
 | `bubble_columns_speed_deadband` | 1.5 | drift either side of target before the server corrects |
-| `bubble_columns_surface_taper` | 4.0 | nodes below the surface where the lift eases off; 0 = launch |
+| `bubble_columns_surface_taper` | 1.0 | nodes above your **head** where the lift eases off; 0 = launch |
 | `bubble_columns_up_speed` | 8.0 | velocity floor for the updraft, nodes/s |
 | `bubble_columns_down_speed` | 6.0 | terminal whirlpool speed, nodes/s |
 | `bubble_columns_accel` | 30.0 | how sharply an *entity* reaches that speed, nodes/s² |

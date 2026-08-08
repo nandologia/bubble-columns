@@ -682,15 +682,23 @@ def test_surface_resonance():
           gt.FACTOR(deep, "liquid_sink/bubble_columns:column") == -1.4,
           gt.FACTOR(deep, "liquid_sink/bubble_columns:column"))
 
-    # Surface is at 0.5 + 16 = 16.5, taper starts 2.5 below it. The head sits
-    # 1.4 above the feet, so it leaves the water at about y=15.1 -- stay under
-    # that or there is no lift to taper.
+    # Surface is at 0.5 + 16 = 16.5. The taper is measured HEAD-to-surface and
+    # the head sits 1.4 above the feet, so with a 1.0 taper easing starts once
+    # the feet pass y = 16.5 - 1.4 - 1.0 = 14.1.
+    still_full = gt.MAKE_OBJECT(0, 13.5, 0, lua_t.table(player=True, name="ned"))
+    gt.RUN_STEPS(0.05, 0.05)
+    check("full speed while the head is still well under",
+          gt.FACTOR(still_full, "liquid_sink/bubble_columns:column") == -1.4,
+          gt.FACTOR(still_full, "liquid_sink/bubble_columns:column"))
+
     near = gt.MAKE_OBJECT(0, 14.8, 0, lua_t.table(player=True, name="lee"))
     gt.RUN_STEPS(0.05, 0.05)
     sink_near = gt.FACTOR(near, "liquid_sink/bubble_columns:column")
     check("sink eased off approaching the surface",
-          close(sink_near, -1.4 * 0.3), sink_near)
+          close(sink_near, -1.4 * 0.6), sink_near)
     check("still rising near the surface, not stalled", sink_near < 0, sink_near)
+    check("easing is a gentle reduction, not a crawl",
+          abs(sink_near) > 0.5 * 1.4, sink_near)
 
     # The taper is a state change, not a per-step recalculation --
     # playerphysics serialises to player meta on every write.
@@ -795,6 +803,46 @@ def test_bubblespeed_command():
           g.FACTOR(player, "liquid_sink/bubble_columns:column"))
 
 
+def test_bubbletaper_command():
+    print("/bubbletaper live tuning")
+    lua = load_mod()
+    g = lua.globals()
+    cmd = g.CHATCOMMANDS["bubbletaper"]
+    check("command is registered", cmd is not None)
+
+    ok, text = cmd.func("nando", "")
+    check("reports the current taper with no argument",
+          ok is True and "1.00 nodes" in text and "60%" in text, text)
+
+    for bad in ("-1", "99", "0.5 2.0", "0.5 -0.1", "nope"):
+        ok, _ = cmd.func("nando", bad)
+        check(f"rejects {bad!r}", ok is False)
+
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 16)
+    # Head 0.3 below the surface: inside the default 1.0 taper.
+    player = g.MAKE_OBJECT(0, 14.8, 0, lua.table(player=True, name="nando"))
+    g.RUN_STEPS(0.2, 0.05)
+    check("eased at the default taper",
+          close(g.FACTOR(player, "liquid_sink/bubble_columns:column"),
+                -1.4 * 0.6))
+
+    # Turning the taper off entirely must restore full speed there.
+    ok, text = cmd.func("nando", "0 1.0")
+    check("accepts a new taper", ok is True)
+    g.RUN_STEPS(0.2, 0.05)
+    check("taper 0 means full speed right to the surface",
+          g.FACTOR(player, "liquid_sink/bubble_columns:column") == -1.4,
+          g.FACTOR(player, "liquid_sink/bubble_columns:column"))
+    check("tells the user how to persist it",
+          "bubble_columns_surface_taper = 0" in text, text)
+
+    # Distance alone must leave the scale untouched.
+    ok, _ = cmd.func("nando", "3")
+    _, text = cmd.func("nando", "")
+    check("setting distance alone keeps the scale",
+          "100%" in text, text)
+
+
 def test_particles():
     print("particles")
     lua = load_mod()
@@ -833,6 +881,7 @@ def main():
                  test_gravity_lift, test_liquid_overrides, test_surface_resonance,
                  test_join_cleanup,
                  test_bubblecheck_command, test_bubblespeed_command,
+                 test_bubbletaper_command,
                  test_expiry, test_particles):
         test()
         print()

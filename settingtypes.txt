@@ -33,7 +33,7 @@ bubble_columns_liquid_fluidity (Updraft fluidity) float 1.5 1.0 8.0
 #    Fraction of the climb speed still applied over the last surface_taper
 #    nodes, so you ease up to the surface and float instead of being carried
 #    clear of it and falling back in.
-bubble_columns_surface_sink_scale (Surface easing) float 0.3 0.0 1.0
+bubble_columns_surface_sink_scale (Surface easing) float 0.6 0.0 1.0
 
 #    Gravity multiplier for a player in an updraft. 0 neutralises gravity so
 #    it cannot claw back what the lift gains between steps. Do NOT set this
@@ -55,8 +55,10 @@ bubble_columns_soul_soil_too (Soul soil makes columns too) bool false
 #    diagnosing a column that does not seem to do anything.
 bubble_columns_debug (Debug logging) bool false
 
-#    How far below the water surface the updraft starts easing off, in nodes.
+#    How far below the water surface the updraft starts easing off, in nodes,
+#    measured from your HEAD (not your feet, which are 1.4 nodes lower).
+#    Tune it live in game with /bubbletaper rather than by restarting.
 #    Without this the lift runs at full speed right up to the surface and
 #    fires you clear of it; you fall back in, get lifted again, and it reads
 #    as bouncing. Set to 0 for a Minecraft-style launch out of the top.
-bubble_columns_surface_taper (Surface taper distance) float 4.0 0.0 12.0
+bubble_columns_surface_taper (Surface taper distance) float 1.0 0.0 12.0

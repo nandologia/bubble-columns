@@ -78,11 +78,11 @@ local LIQUID_SINK = setting_number("liquid_sink", -1.4)
 -- modest: high fluidity also makes the player retain momentum like air, which
 -- is what let them carry speed up out of the water.
 local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 1.5)
--- Fraction of the sink applied over the last SURFACE_TAPER nodes, so the
+-- Fraction of the climb speed kept over the last SURFACE_TAPER nodes, so the
 -- player eases up to the surface and floats instead of being carried clear of
 -- it.  Applied as a second lift state rather than a per-step recalculation --
 -- playerphysics serialises to player meta on every write.
-local SURFACE_SINK_SCALE = setting_number("surface_sink_scale", 0.3)
+local SURFACE_SINK_SCALE = setting_number("surface_sink_scale", 0.6)
 
 -- Below 1 is unsupported by the engine and silently misbehaves.
 if LIQUID_FLUIDITY < 1 then
@@ -95,10 +95,11 @@ end
 -- and fires the player clear of it; they then fall back in and are lifted
 -- again, which reads as bouncing however well behaved each individual launch
 -- is.  Tapering lets them surface and simply float.
--- Wider than it looks like it needs to be: at full climb speed the player
--- crosses a couple of nodes in a fraction of a second, which is not long
--- enough for liquid drag to shed the speed before they reach the surface.
-local SURFACE_TAPER = setting_number("surface_taper", 4.0)
+-- Measured from the player's HEAD, not their feet.  The head sits 1.4 nodes
+-- higher, so measuring from the feet meant a "4 node" taper actually began
+-- easing off with the head still 2.6 nodes under -- the setting did not mean
+-- what it said, and the slowdown started far too early.
+local SURFACE_TAPER = setting_number("surface_taper", 1.0)
 -- Minecraft's updraft keeps you breathing; its whirlpool does not.
 local RESTORE_AIR = setting_bool("restore_air", true)
 -- Traces the whole pipeline to debug.txt: column found -> object in area ->
@@ -459,8 +460,10 @@ local function scan_players(in_column)
 						in_column[player] = true
 						-- Ease off approaching the surface so the player
 						-- arrives and floats instead of being carried clear.
+						-- Measured head-to-surface, so the setting means the
+						-- distance the player actually sees above them.
 						local surface_y = source_pos.y + 0.5 + height
-						local near = (surface_y - pos.y) < SURFACE_TAPER
+						local near = (surface_y - (pos.y + 1.4)) < SURFACE_TAPER
 						begin_lift(player,
 							rising and (near and "up_near" or "up") or "down")
 						-- Deadbanded on the way up because the liquid
@@ -684,6 +687,46 @@ core.register_chatcommand("bubblespeed", {
 			"climb speed = %.2f (this session only)\n"
 			.. "to keep it, add to minetest.conf:  bubble_columns_liquid_sink = %s",
 			value, param)
+	end,
+})
+
+-- Same reasoning as /bubblespeed: how the column feels at the surface can
+-- only be judged by riding one, so it should not cost a restart per guess.
+core.register_chatcommand("bubbletaper", {
+	params = "[<nodes> [<scale>]]",
+	description = "Show or set how early and how much the climb eases off "
+		.. "below the surface",
+	privs = {server = true},
+	func = function(name, param)
+		if param == "" then
+			return true, string.format(
+				"taper: starts %.2f nodes above your head, keeping %.0f%% "
+				.. "of climb speed", SURFACE_TAPER, SURFACE_SINK_SCALE * 100)
+		end
+		local nodes, scale = param:match("^(%S+)%s*(%S*)$")
+		nodes = tonumber(nodes)
+		if not nodes or nodes < 0 or nodes > 12 then
+			return false, "nodes must be between 0 and 12, e.g. /bubbletaper 0.5 0.7"
+		end
+		if scale ~= "" then
+			scale = tonumber(scale)
+			if not scale or scale < 0 or scale > 1 then
+				return false, "scale must be between 0 and 1 (fraction of climb speed)"
+			end
+			SURFACE_SINK_SCALE = scale
+		end
+		SURFACE_TAPER = nodes
+
+		for obj in pairs(lifted) do
+			end_lift(obj)
+		end
+
+		return true, string.format(
+			"taper = %.2f nodes, keeping %.0f%% of speed (this session only)\n"
+			.. "to keep it:  bubble_columns_surface_taper = %s\n"
+			.. "             bubble_columns_surface_sink_scale = %s",
+			SURFACE_TAPER, SURFACE_SINK_SCALE * 100,
+			SURFACE_TAPER, SURFACE_SINK_SCALE)
 	end,
 })
 
