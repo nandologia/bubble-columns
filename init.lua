@@ -78,6 +78,11 @@ local LIQUID_SINK = setting_number("liquid_sink", -1.4)
 -- modest: high fluidity also makes the player retain momentum like air, which
 -- is what let them carry speed up out of the water.
 local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 1.5)
+-- The whirlpool equivalent: a positive multiplier on normal sink speed.  Was
+-- originally a server-side velocity drive, which dragged the player to the
+-- bottom almost instantly and brought back the same growing bounce the
+-- updraft used to have -- unsurprisingly, since it was the same mechanism.
+local DOWN_SINK = setting_number("down_sink", 2.0)
 -- Fraction of the climb speed kept over the last SURFACE_TAPER nodes, so the
 -- player eases up to the surface and floats instead of being carried clear of
 -- it.  Applied as a second lift state rather than a per-step recalculation --
@@ -321,26 +326,33 @@ local function begin_lift(obj, want)
 		-- the release sweep must still know which path to take.
 		lifted[obj] = {kind = want, last_seen = now, is_player = obj:is_player()}
 	end
-	-- Only the updraft needs the hold: it keeps gravity from clawing back
-	-- what the velocity drive gains between steps.  A whirlpool wants
-	-- gravity exactly as it is.
-	if rising then
-		if obj:is_player() then
-			local sink = LIQUID_SINK
+	if obj:is_player() then
+		-- Both directions are client-side, and for the same reason: the
+		-- whirlpool was the last path still driven from the server, and it
+		-- reproduced both server-drive symptoms exactly -- dragged the
+		-- player to the bottom almost instantly, and brought back the
+		-- bounce that grew every cycle.
+		local sink
+		if rising then
+			sink = LIQUID_SINK
 			if want == "up_near" then
 				sink = sink * SURFACE_SINK_SCALE
 			end
+			-- Only the updraft neutralises gravity, to stop it clawing back
+			-- the climb.  A whirlpool wants gravity exactly as it is.
 			playerphysics.add_physics_factor(obj, "gravity", LIFT_ID, UP_GRAVITY)
-			playerphysics.add_physics_factor(obj, "liquid_sink", LIFT_ID, sink)
-			playerphysics.add_physics_factor(obj, "liquid_fluidity", LIFT_ID,
-				LIQUID_FLUIDITY)
-			dbg("overrides on for %s (%s): gravity=%.2f sink=%.2f fluidity=%.2f",
-				obj:get_player_name(), want, UP_GRAVITY, sink, LIQUID_FLUIDITY)
 		else
-			local entity = obj:get_luaentity()
-			if entity and entity.is_mob and entity.add_physics_factor then
-				entity:add_physics_factor("fall_speed", LIFT_ID, 0)
-			end
+			sink = DOWN_SINK
+		end
+		playerphysics.add_physics_factor(obj, "liquid_sink", LIFT_ID, sink)
+		playerphysics.add_physics_factor(obj, "liquid_fluidity", LIFT_ID,
+			LIQUID_FLUIDITY)
+		dbg("overrides on for %s (%s): sink=%.2f fluidity=%.2f",
+			obj:get_player_name(), want, sink, LIQUID_FLUIDITY)
+	elseif rising then
+		local entity = obj:get_luaentity()
+		if entity and entity.is_mob and entity.add_physics_factor then
+			entity:add_physics_factor("fall_speed", LIFT_ID, 0)
 		end
 	end
 end
@@ -386,26 +398,11 @@ local function drive_towards(obj, target, dtime)
 	return vel.y
 end
 
--- Force `obj` to `target` vertical speed outright, rather than easing towards
--- it.  In a liquid the client bleeds an injected velocity away within a
--- frame or two, so anything gentler simply never accumulates -- this is the
--- shape mcl_potions' levitation uses, and why that effect works underwater.
--- Only ever speeds an object up in the intended direction; something already
--- moving faster that way is left alone.
--- Hold `obj` at `target` vertical speed, correcting only once it has drifted
--- further than `deadband` either side of it.
---
--- The clamp is symmetric: this holds the player *at* the target rather than
--- pushing them towards it, so nothing -- neither the client nor a plunge from
--- above -- can carry them past it and turn the surface into a trampoline.
-local function force_speed(obj, target, deadband)
-	local vel = obj:get_velocity()
-	if not vel then return end
-	deadband = deadband or 0
-	if math.abs(vel.y - target) > deadband then
-		obj:add_velocity({x = 0, y = target - vel.y, z = 0})
-	end
-end
+-- (There is deliberately no player velocity helper here any more.  Every
+-- server-side velocity rewrite this mod applied to a player caused jitter and
+-- a growing bounce; both directions are now client-side physics overrides.
+-- Entities still use drive_towards above, which is fine -- they are simulated
+-- server-side with no client predicting them.)
 
 -- Primary detection, driven by the players themselves, and the whole of the
 -- player physics.
@@ -472,15 +469,13 @@ local function scan_players(in_column)
 						-- client, or a Luanti build without
 						-- physics_overrides_v2).  A whirlpool has no override
 						-- helping it, so it is driven outright.
-						-- Deliberately nothing for a rising player: the
-						-- liquid_sink override above is the entire lift, and
-						-- adding a server-side velocity rewrite here is what
-						-- produced both the jitter and the growing bounce.
-						-- A whirlpool has no client-side equivalent, so it is
-						-- still driven from here.
-						if not rising then
-							force_speed(player, -DOWN_SPEED)
-						end
+						-- Deliberately nothing here, in either direction: the
+						-- liquid_sink override set by begin_lift is the whole
+						-- of the player physics.  Every server-side velocity
+						-- rewrite this mod has ever done to a player produced
+						-- jitter and a bounce that grew each cycle, because
+						-- add_velocity arbitrates against a get_velocity()
+						-- reading that lags the client.
 						if rising and RESTORE_AIR then
 							local max_breath = player:get_properties().breath_max or 10
 							if player:get_breath() < max_breath then
@@ -662,20 +657,29 @@ core.register_chatcommand("bubblespeed", {
 	func = function(name, param)
 		if param == "" then
 			return true, string.format(
-				"climb speed (liquid_sink) = %.2f -- more negative is faster",
-				LIQUID_SINK)
+				"updraft climb = %.2f (negative rises, more is faster)\n"
+				.. "whirlpool sink = %.2f (positive sinks, more is faster)",
+				LIQUID_SINK, DOWN_SINK)
 		end
 		local value = tonumber(param)
 		if not value then
 			return false, "expected a number, e.g. /bubblespeed -1.8"
 		end
-		if value > 0 then
-			return false, "must be 0 or negative; negative is what rises"
+		if value < -6 or value > 6 then
+			return false, "keep it between -6 and 6"
 		end
-		if value < -6 then
-			return false, "below -6 is faster than anything is tested at"
+		-- Routed by sign: the two are the same engine setting in opposite
+		-- directions, so one command covers both without a mode word.
+		local which
+		if value < 0 then
+			LIQUID_SINK = value
+			which = "liquid_sink"
+		elseif value > 0 then
+			DOWN_SINK = value
+			which = "down_sink"
+		else
+			return false, "0 would do nothing; negative rises, positive sinks"
 		end
-		LIQUID_SINK = value
 
 		-- Drop every current hold so the new value is applied on the next
 		-- step; begin_lift is a no-op while the state is unchanged.
@@ -684,9 +688,9 @@ core.register_chatcommand("bubblespeed", {
 		end
 
 		return true, string.format(
-			"climb speed = %.2f (this session only)\n"
-			.. "to keep it, add to minetest.conf:  bubble_columns_liquid_sink = %s",
-			value, param)
+			"%s = %.2f (this session only)\n"
+			.. "to keep it, add to minetest.conf:  bubble_columns_%s = %s",
+			which, value, which, param)
 	end,
 })
 

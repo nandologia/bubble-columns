@@ -522,8 +522,11 @@ def test_gravity_lift():
     # growing surface bounce. The liquid_sink override is the whole lift.
     check("server does NOT rewrite a rising player's velocity",
           close(player._vel.y, 0), player._vel.y)
-    check("whirlpool player IS driven (no client-side equivalent)",
-          close(sinker._vel.y, -6), sinker._vel.y)
+    check("server does NOT rewrite a sinking player's velocity either",
+          close(sinker._vel.y, 0), sinker._vel.y)
+    check("whirlpool sinks the player via a positive liquid_sink",
+          g.FACTOR(sinker, "liquid_sink/bubble_columns:column") == 2.0,
+          g.FACTOR(sinker, "liquid_sink/bubble_columns:column"))
     check("entity in the same column is driven server-side", mob._vel.y > 0,
           mob._vel.y)
 
@@ -623,10 +626,13 @@ def test_liquid_overrides():
     build_column(lua2, 0, 0, "mcl_nether:magma", 16)
     sinker = g2.MAKE_OBJECT(0, 4, 0, lua2.table(player=True, name="hank"))
     g2.RUN_STEPS(0.2, 0.05)
-    check("whirlpool does not touch liquid_sink",
-          g2.FACTOR(sinker, "liquid_sink/bubble_columns:column") is None)
-    check("whirlpool is driven outright, no deadband",
-          close(sinker._vel.y, -6), sinker._vel.y)
+    check("whirlpool sets a positive liquid_sink",
+          g2.FACTOR(sinker, "liquid_sink/bubble_columns:column") == 2.0,
+          g2.FACTOR(sinker, "liquid_sink/bubble_columns:column"))
+    check("whirlpool leaves gravity alone (it is an ally going down)",
+          g2.FACTOR(sinker, "gravity/bubble_columns:column") is None)
+    check("whirlpool never rewrites the player's velocity",
+          close(sinker._vel.y, 0), sinker._vel.y)
 
 
 def test_surface_resonance():
@@ -778,13 +784,22 @@ def test_bubblespeed_command():
     check("command is registered", cmd is not None)
 
     ok, text = cmd.func("nando", "")
-    check("reports the current speed with no argument",
-          ok is True and "-1.40" in text, text)
+    check("reports both directions with no argument",
+          ok is True and "-1.40" in text and "2.00" in text, text)
 
     for bad, why in ((" ", "not a number"), ("fast", "not a number"),
-                     ("2", "positive would sink"), ("-99", "beyond tested")):
+                     ("0", "would do nothing"), ("-99", "beyond tested"),
+                     ("99", "beyond tested")):
         ok, _ = cmd.func("nando", bad)
         check(f"rejects {bad!r} ({why})", ok is False)
+
+    # Sign routes to the direction: negative updraft, positive whirlpool.
+    ok, text = cmd.func("nando", "2.5")
+    check("a positive value sets the whirlpool, not the updraft",
+          ok is True and "down_sink" in text, text)
+    _, text = cmd.func("nando", "")
+    check("updraft speed untouched by a whirlpool change",
+          "-1.40" in text and "2.50" in text, text)
 
     build_column(lua, 0, 0, "mcl_nether:soul_sand", 16)
     player = g.MAKE_OBJECT(0, 4, 0, lua.table(player=True, name="nando"))

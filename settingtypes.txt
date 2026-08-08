@@ -7,8 +7,16 @@ bubble_columns_max_height (Maximum column height) int 24 1 128
 #    in nodes per second. Players are controlled by liquid_sink below.
 bubble_columns_up_speed (Updraft speed, entities) float 8.0 0.0 40.0
 
-#    Terminal downward speed inside a magma whirlpool, in nodes per second.
-bubble_columns_down_speed (Whirlpool speed) float 6.0 0.0 40.0
+#    Terminal downward speed for MOBS, BOATS AND ITEMS in a magma whirlpool,
+#    in nodes per second. Players are controlled by down_sink below.
+bubble_columns_down_speed (Whirlpool speed, entities) float 6.0 0.0 40.0
+
+#    THE SINK SPEED CONTROL for players in a magma whirlpool: a multiplier on
+#    normal liquid sinking, so higher sinks faster. Client-side, for the same
+#    reason as the updraft -- driving this from the server dragged the player
+#    to the bottom instantly and made them bounce. Tune live with /bubblespeed
+#    using a POSITIVE number.
+bubble_columns_down_sink (Whirlpool sink speed) float 2.0 1.0 6.0
 
 #    How sharply mobs, boats and dropped items are pulled to that speed, in
 #    nodes per second squared. Does not affect players, who are moved by the

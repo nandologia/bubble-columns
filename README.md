@@ -88,6 +88,12 @@ Velocity injection every server step — the `mcl_potions` levitation pattern,
 and so what shulker bullets rely on — is what got this working at all, and
 remains the fallback when the liquid overrides can't hold the speed.
 
+Whirlpools work the same way, with a *positive* `liquid_sink`. They were the
+last thing still driven from the server, and they reproduced both server-drive
+symptoms exactly — dragging the player to the bottom almost instantly, and the
+bounce that grew every cycle. Gravity is left alone there; going down it is an
+ally.
+
 Entities (mobs, boats, dropped items) are simulated server-side where
 `add_velocity` behaves normally, so they stay on the coarser cadence and are
 eased towards a terminal speed — which also means an entity already falling
@@ -95,8 +101,9 @@ fast is braked to the whirlpool's speed rather than accelerated past it.
 
 ## Tuning the climb speed
 
-    /bubblespeed          -- show the current climb speed
-    /bubblespeed -2.2     -- try a new one immediately
+    /bubblespeed          -- show both climb and sink speeds
+    /bubblespeed -2.2     -- negative sets the updraft
+    /bubblespeed 2.5      -- positive sets the whirlpool
     /bubbletaper          -- show how it eases off at the surface
     /bubbletaper 0.5 0.7  -- ease later (0.5 nodes) and less (keep 70%)
 
@@ -154,7 +161,8 @@ settings menu.
 | `bubble_columns_speed_deadband` | 1.5 | drift either side of target before the server corrects |
 | `bubble_columns_surface_taper` | 1.0 | nodes above your **head** where the lift eases off; 0 = launch |
 | `bubble_columns_up_speed` | 8.0 | velocity floor for the updraft, nodes/s |
-| `bubble_columns_down_speed` | 6.0 | terminal whirlpool speed, nodes/s |
+| `bubble_columns_down_sink` | 2.0 | **player sink speed** in a whirlpool; higher sinks faster |
+| `bubble_columns_down_speed` | 6.0 | whirlpool speed for **entities only**, nodes/s |
 | `bubble_columns_accel` | 30.0 | how sharply an *entity* reaches that speed, nodes/s² |
 | `bubble_columns_up_gravity` | 0.0 | *player* gravity multiplier in an updraft; 0 = neutral, NOT a lift |
 | `bubble_columns_soul_soil_too` | false | let soul soil make columns too (Minecraft says no) |
