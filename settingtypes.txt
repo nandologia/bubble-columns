@@ -50,9 +50,9 @@ bubble_columns_surface_sink_scale (Surface easing) float 0.6 0.0 1.0
 #    model. The lifting is done by the speed setting above.
 bubble_columns_up_gravity (Updraft gravity multiplier) float 0.0 -2.0 1.0
 
-#    Refill the player's air while they ride a soul sand column, as in
-#    Minecraft. Magma whirlpools never refill air whatever this is set to.
-bubble_columns_restore_air (Updraft refills air) bool true
+#    Refill the player's air while they are in a bubble column, as in
+#    Minecraft. Applies to whirlpools as well as updrafts.
+bubble_columns_restore_air (Bubble columns refill air) bool true
 
 #    Let Soul Soil make updrafts as well as Soul Sand. Minecraft does not do
 #    this -- only soul sand works there -- but the two blocks look alike and
@@ -70,31 +70,3 @@ bubble_columns_debug (Debug logging) bool false
 #    fires you clear of it; you fall back in, get lifted again, and it reads
 #    as bouncing. Set to 0 for a Minecraft-style launch out of the top.
 bubble_columns_surface_taper (Surface taper distance) float 1.0 0.0 12.0
-
-[Whirlpool vortex appearance]
-
-#    Number of spiral arms the descending bubbles are drawn in. More is a
-#    denser, smoother swirl at the cost of one particle spawner each.
-bubble_columns_spiral_arms (Spiral arms) int 8 1 12
-
-#    How far the arms sit from the column axis, in nodes. Beyond about 0.45
-#    they leave the block.
-bubble_columns_spiral_radius (Spiral radius) float 0.30 0.05 0.45
-
-#    How fast bubbles travel around the axis, in nodes per second.
-bubble_columns_spiral_spin (Spiral spin speed) float 0.7 0.0 4.0
-
-#    Inward pull that bends each bubble's path back towards the axis.
-#    KEEP THIS SMALL. A particle's acceleration is a fixed vector set at birth
-#    and does not track the axis, so displacement is 0.5 * pull * lifetime^2
-#    over its whole life -- a pull of 9 slings every bubble 3.6 nodes clear of
-#    the column, in every direction at once.
-bubble_columns_spiral_pull (Spiral inward pull) float 1.2 0.0 8.0
-
-#    How fast the whole ring of arms rotates between refreshes, in radians per
-#    second, so the vortex turns instead of standing still.
-bubble_columns_spiral_turn (Spiral rotation) float 2.0 0.0 6.0
-
-#    Draw the whirlpool as a vortex at all. Turn this off for a plain
-#    descending column of bubbles.
-bubble_columns_spiral (Whirlpool vortex) bool true

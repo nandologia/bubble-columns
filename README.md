@@ -106,9 +106,6 @@ fast is braked to the whirlpool's speed rather than accelerated past it.
     /bubblespeed 2.5      -- positive sets the whirlpool
     /bubbletaper          -- show how it eases off at the surface
     /bubbletaper 0.5 0.7  -- ease later (0.5 nodes) and less (keep 70%)
-    /bubblespiral         -- show the whirlpool vortex shape
-    /bubblespiral off     -- plain descending bubbles instead
-    /bubblespiral 0.9 1.5 -- set spin and inward pull
 
 Climb speed and surface behaviour can only really be judged by riding a
 column, so both are adjustable in game without a restart. The taper distance is
@@ -209,12 +206,13 @@ right in play, not guesses.
 Verified since: dropped items, and boats sinking (but not breaking) in a
 whirlpool — which matches Minecraft, where a boat "shakes and eventually sinks".
 
-Not yet verified: the source-water restriction, air in whirlpools, and the
-spiral vortex, all added after the last in-game session. Not deployed to the
+Not yet verified: the source-water restriction and air in whirlpools, both
+added after the last in-game session. Not deployed to the
 Gondor server.
 
-Known divergences from vanilla, all deliberate: water-breathing mobs do not
-suffocate in columns; there is no ambient sound; and the surface taper
+Known divergences from vanilla, all deliberate: bubbles rise and fall in a
+straight column rather than a vortex; water-breathing mobs do not suffocate in
+columns; there is no ambient sound; and the surface taper
 suppresses vanilla's repeated ~1 block bounce at the top (`/bubbletaper 0`
 restores it).
 

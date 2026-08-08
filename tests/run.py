@@ -376,90 +376,6 @@ def test_source_water_only():
           g.FACTOR(swimmer, "liquid_sink/bubble_columns:column"))
 
 
-def test_whirlpool_spiral():
-    """The descending bubbles are drawn as a rotating vortex."""
-    print("whirlpool spiral")
-    lua = load_mod()
-    g = lua.globals()
-    build_column(lua, 0, 0, "mcl_nether:magma", 8)
-    g.PARTICLES_CLEAR()
-    g.RUN_ABM(0, 0, 0)
-
-    ARMS, RADIUS = 8, 0.30
-    spawners = list(g.PARTICLES.values())
-    check("one spawner per spiral arm", len(spawners) == ARMS, len(spawners))
-
-    import math as _m
-
-    def centre(s):
-        return ((s.minpos.x + s.maxpos.x) / 2, (s.minpos.z + s.maxpos.z) / 2)
-
-    radii = [_m.hypot(*centre(s)) for s in spawners]
-    check("every arm sits on the spiral radius",
-          all(close(r, RADIUS, 1e-3) for r in radii), radii)
-
-    # Tangential velocity: perpendicular to the arm's radius vector.
-    s = spawners[0]
-    dx, dz = centre(s)
-    dot = dx * s.minvel.x + dz * s.minvel.z
-    check("launch velocity is tangential, not radial", close(dot, 0, 1e-6), dot)
-
-    # Inward acceleration: opposite the radius vector, so the path curves.
-    inward = dx * s.minacc.x + dz * s.minacc.z
-    check("acceleration points back at the axis", inward < 0, inward)
-    check("bubbles descend", s.minvel.y < 0 and s.maxvel.y < 0)
-
-    # Arms must be evenly spread, not stacked on one side.
-    angles = sorted(_m.atan2(cz, cx) % (2 * _m.pi)
-                    for cx, cz in (centre(p) for p in spawners))
-    gaps = [(angles[(i + 1) % ARMS] - angles[i]) % (2 * _m.pi)
-            for i in range(ARMS)]
-    check("arms evenly spaced around the axis",
-          all(close(gp, 2 * _m.pi / ARMS, 1e-6) for gp in gaps), gaps)
-
-    # THE constraint that was violated first time round. A particle's
-    # acceleration is a fixed vector set at birth -- it does not track the
-    # axis -- so displacement is 0.5*a*t^2 over the whole lifetime. A pull of
-    # 9 over 0.9s is 3.6 nodes: every bubble slung clear across the column.
-    life = s.maxexptime
-    inward_travel = 0.5 * _m.hypot(s.minacc.x, s.minacc.z) * life * life
-    check("inward pull cannot fling a bubble across the column",
-          inward_travel < RADIUS, inward_travel)
-    around_travel = _m.hypot(s.minvel.x, s.minvel.z) * life
-    check("tangential travel stays under one circumference",
-          around_travel < 2 * _m.pi * RADIUS, around_travel)
-    check("a bubble stays roughly within its own node",
-          RADIUS + around_travel < 1.0, RADIUS + around_travel)
-
-    # The ring must rotate between re-arms, or the vortex looks frozen.
-    g.RUN_STEPS(3.0, 0.1)
-    g.PARTICLES_CLEAR()
-    g.RUN_ABM(0, 0, 0)
-    later = list(g.PARTICLES.values())[0]
-    a0 = _m.atan2(dz, dx)
-    a1 = _m.atan2(*reversed(centre(later)))
-    check("the vortex rotates between re-arms", not close(a0, a1, 1e-3),
-          f"{a0} -> {a1}")
-
-    # The off switch has to fall back to a plain descending column.
-    lua_off = load_mod({"bubble_columns_spiral": False})
-    go = lua_off.globals()
-    build_column(lua_off, 0, 0, "mcl_nether:magma", 8)
-    go.PARTICLES_CLEAR()
-    go.RUN_ABM(0, 0, 0)
-    check("spiral off gives one plain spawner", len(go.PARTICLES) == 1,
-          len(go.PARTICLES))
-    check("plain fallback still descends", go.PARTICLES[1].minvel.y < 0)
-
-    # Rising columns stay a single plain spawner.
-    lua2 = load_mod()
-    g2 = lua2.globals()
-    build_column(lua2, 0, 0, "mcl_nether:soul_sand", 8)
-    g2.PARTICLES_CLEAR()
-    g2.RUN_ABM(0, 0, 0)
-    check("updraft is still one straight spawner", len(g2.PARTICLES) == 1)
-
-
 def test_max_height():
     print("max height cap")
     lua = load_mod({"bubble_columns_max_height": 5})
@@ -991,42 +907,6 @@ def test_bubbletaper_command():
           "100%" in text, text)
 
 
-def test_bubblespiral_command():
-    print("/bubblespiral live tuning")
-    lua = load_mod()
-    g = lua.globals()
-    cmd = g.CHATCOMMANDS["bubblespiral"]
-    check("command is registered", cmd is not None)
-
-    ok, text = cmd.func("nando", "")
-    check("reports the current shape", ok is True and "spiral on" in text, text)
-    check("reports the travel a bubble actually makes", "nodes around" in text,
-          text)
-
-    ok, text = cmd.func("nando", "off")
-    check("can be switched off", ok is True and "spiral off" in text, text)
-    build_column(lua, 0, 0, "mcl_nether:magma", 8)
-    g.PARTICLES_CLEAR()
-    g.RUN_ABM(0, 0, 0)
-    check("switching off takes effect immediately", len(g.PARTICLES) == 1,
-          len(g.PARTICLES))
-
-    ok, _ = cmd.func("nando", "0.9 1.5 6")
-    check("accepts spin/pull/arms", ok is True)
-    # Spawners are rate-limited to one re-arm per PARTICLE_PERIOD, so a live
-    # change shows on the next refresh rather than instantly.
-    g.RUN_STEPS(2.5, 0.1)
-    g.PARTICLES_CLEAR()
-    g.RUN_ABM(0, 0, 0)
-    check("setting values turns the spiral back on", len(g.PARTICLES) == 6,
-          len(g.PARTICLES))
-
-    # The guard rails exist because 9.0 was what flung bubbles across the map.
-    for bad in ("9 9", "1 20", "nope", "1", "1 1 99"):
-        ok, _ = cmd.func("nando", bad)
-        check(f"rejects {bad!r}", ok is False)
-
-
 def test_particles():
     print("particles")
     lua = load_mod()
@@ -1060,13 +940,13 @@ def test_particles():
 def main():
     print(f"bubble_columns offline tests  (lua {lupa.LuaRuntime().lua_implementation})\n")
     for test in (test_column_detection, test_source_water_only,
-                 test_whirlpool_spiral, test_max_height, test_updraft_physics,
+                 test_max_height, test_updraft_physics,
                  test_whirlpool_physics, test_standing_on_the_source_block,
                  test_selectivity, test_breath,
                  test_gravity_lift, test_liquid_overrides, test_surface_resonance,
                  test_join_cleanup,
                  test_bubblecheck_command, test_bubblespeed_command,
-                 test_bubbletaper_command, test_bubblespiral_command,
+                 test_bubbletaper_command,
                  test_expiry, test_particles):
         test()
         print()

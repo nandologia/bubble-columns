@@ -93,17 +93,14 @@ local SURFACE_SINK_SCALE = setting_number("surface_sink_scale", 0.6)
 if LIQUID_FLUIDITY < 1 then
 	LIQUID_FLUIDITY = 1
 end
--- (There is deliberately no speed deadband any more: nothing rewrites a
--- rising player's velocity, so there is nothing to put a deadband around.)
--- Distance below the water surface over which the updraft eases off, in
--- nodes.  Without this the lift runs at full speed right up to the surface
--- and fires the player clear of it; they then fall back in and are lifted
--- again, which reads as bouncing however well behaved each individual launch
--- is.  Tapering lets them surface and simply float.
--- Measured from the player's HEAD, not their feet.  The head sits 1.4 nodes
--- higher, so measuring from the feet meant a "4 node" taper actually began
--- easing off with the head still 2.6 nodes under -- the setting did not mean
--- what it said, and the slowdown started far too early.
+
+-- How far below the surface the updraft starts easing off, in nodes.  Without
+-- it the lift runs at full speed right up to the surface and fires the player
+-- clear; they fall back in, get lifted again, and it reads as bouncing.
+--
+-- Measured from the player's HEAD, not their feet, which sit 1.4 nodes lower.
+-- Measuring from the feet made the setting mean something else entirely and
+-- started the slowdown far too early.
 local SURFACE_TAPER = setting_number("surface_taper", 1.0)
 -- Both directions replenish air, as in Minecraft -- the wiki describes it for
 -- bubble columns generally, not just rising ones.  A whirlpool is still
@@ -149,32 +146,6 @@ local OBJECT_INTERVAL = 0.1
 -- How often a live column re-arms its particle spawner.
 local PARTICLE_PERIOD = 2.0
 
--- Whirlpool vortex shape.
---
--- These have to stay SMALL, which is not obvious from the maths.  A particle's
--- acceleration in Luanti is a fixed vector chosen at birth; it does not track
--- the column axis.  So it never curves into an orbit -- it bends once and then
--- keeps going, and over a particle's whole lifetime the displacement is
--- 0.5 * accel * lifetime^2.  The first attempt used a pull of 9 over 0.9s,
--- which is 3.6 nodes: every bubble was slung across the column and out the far
--- side, in five different directions at once.
---
--- Keep tangential travel (spin * lifetime) to a fraction of the circumference,
--- and inward displacement well under the radius.  The swirl then comes mostly
--- from the ring of arms rotating between refreshes, which costs nothing.
-local SPIRAL = setting_bool("spiral", true)
-local SPIRAL_ARMS = math.max(1, math.floor(setting_number("spiral_arms", 8)))
--- How far out from the axis the arms sit.  Beyond ~0.45 they leave the node.
-local SPIRAL_RADIUS = setting_number("spiral_radius", 0.30)
--- Tangential launch speed: how fast a bubble travels around the axis.
-local SPIRAL_SPIN = setting_number("spiral_spin", 0.7)
--- Inward acceleration.  Bends the tangent back towards the axis so bubbles
--- trace an arc rather than a straight line -- gently.
-local SPIRAL_PULL = setting_number("spiral_pull", 1.2)
--- Radians per second the whole ring of arms is rotated between re-arms.  This
--- is what actually reads as rotation, so it can afford to be brisk.
-local SPIRAL_TURN = setting_number("spiral_turn", 2.0)
-
 -- Monotonic seconds since load, accumulated from globalstep dtime.  Used
 -- instead of os.time() so expiry follows server time, not wall clock.
 local now = 0
@@ -207,111 +178,36 @@ local function measure_column(pos)
 	return height
 end
 
--- Fields every bubble shares, whichever pattern it is drawn in.
-local function bubble_common(fields)
-	fields.minsize = 0.7
-	fields.maxsize = 2.4
-	fields.collisiondetection = false
-	-- Shipped by mcl_player for the underwater breath trail.  Luanti's media
-	-- namespace is flat, so no dependency is needed to use it.
-	fields.texture = "mcl_particles_bubble.png"
-	fields.glow = 2
-	-- Overlaps the next re-arm so the column does not visibly pulse.
-	fields.time = PARTICLE_PERIOD + 0.5
-	return fields
-end
-
--- Rising column: a straight fizz up the whole shaft.
-local function spawn_up_particles(pos, height)
+-- A straight fizz along the whole shaft, rising or falling with the column.
+local function spawn_particles(pos, kind, height)
+	local rising = kind == "up"
 	-- Bubbles keep travelling on their own velocity after they spawn, so
 	-- filling the column right to the surface threw them well clear of the
 	-- water.  Stop the spawn volume a node short and keep speed x lifetime
 	-- under that node, so they die at the surface rather than above it.
 	local top = math.max(0.5, height - 1)
-	core.add_particlespawner(bubble_common({
+	core.add_particlespawner({
 		-- Enough to read as a column without flooding the client on a
 		-- reef full of magma blocks.
 		amount = math.min(4 * height, 60),
+		-- Overlaps the next re-arm so the column does not visibly pulse.
+		time = PARTICLE_PERIOD + 0.5,
 		minpos = {x = pos.x - 0.45, y = pos.y + 0.5, z = pos.z - 0.45},
 		maxpos = {x = pos.x + 0.45, y = pos.y + 0.5 + top, z = pos.z + 0.45},
-		minvel = {x = -0.2, y = 1.5, z = -0.2},
-		maxvel = {x = 0.2, y = 2.4, z = 0.2},
+		minvel = {x = -0.2, y = rising and 1.5 or -1.5, z = -0.2},
+		maxvel = {x = 0.2, y = rising and 2.4 or -2.4, z = 0.2},
 		minacc = {x = -0.4, y = 0, z = -0.4},
 		maxacc = {x = 0.4, y = 0, z = 0.4},
 		minexptime = 0.25,
 		maxexptime = 0.4,
-	}))
-end
-
--- Whirlpool: a descending vortex, drawn as several arms around the axis.
---
--- One spawner cannot do this.  `attract` looks like the tool for it, but it
--- only sets a particle's *birth* velocity -- there is no sustained centripetal
--- force in the API, and a single spawner's `vel`/`acc` ranges are cartesian,
--- so every particle in it travels one straight or parabolic path.
---
--- So the swirl is built from SPIRAL_ARMS narrow spawners spaced around the
--- circle.  Each launches its bubbles along the tangent at its own angle, with
--- a constant acceleration pointing back at the axis, which bends the path into
--- an arc instead of letting it fly off on the tangent.  Arc plus descent reads
--- as a helix.  The whole ring is rotated a little on every re-arm so the
--- pattern turns rather than standing still.
-local function spawn_down_particles(pos, height)
-	local top = math.max(0.5, height - 0.5)
-
-	-- Escape hatch: a plain descending fizz, same shape as the rising column.
-	if not SPIRAL then
-		core.add_particlespawner(bubble_common({
-			amount = math.min(4 * height, 60),
-			minpos = {x = pos.x - 0.45, y = pos.y + 0.5, z = pos.z - 0.45},
-			maxpos = {x = pos.x + 0.45, y = pos.y + 0.5 + top, z = pos.z + 0.45},
-			minvel = {x = -0.2, y = -1.2, z = -0.2},
-			maxvel = {x = 0.2, y = -2.0, z = 0.2},
-			minacc = {x = -0.4, y = 0, z = -0.4},
-			maxacc = {x = 0.4, y = 0, z = 0.4},
-			minexptime = 0.25,
-			maxexptime = 0.4,
-		}))
-		return
-	end
-
-	local per_arm = math.max(2, math.floor(math.min(4 * height, 60) / SPIRAL_ARMS))
-	local phase = now * SPIRAL_TURN
-
-	for arm = 0, SPIRAL_ARMS - 1 do
-		local angle = phase + arm * (2 * math.pi / SPIRAL_ARMS)
-		local ca, sa = math.cos(angle), math.sin(angle)
-		local px = pos.x + ca * SPIRAL_RADIUS
-		local pz = pos.z + sa * SPIRAL_RADIUS
-		-- Tangent at this angle, anticlockwise seen from above.
-		local tx, tz = -sa * SPIRAL_SPIN, ca * SPIRAL_SPIN
-		-- Back towards the axis, so the tangent curves into an orbit.
-		local ax, az = -ca * SPIRAL_PULL, -sa * SPIRAL_PULL
-
-		core.add_particlespawner(bubble_common({
-			amount = per_arm,
-			-- A narrow box, not the full column width: the arm's position
-			-- is the whole point, so it must not be smeared across the shaft.
-			minpos = {x = px - 0.05, y = pos.y + 0.5, z = pz - 0.05},
-			maxpos = {x = px + 0.05, y = pos.y + 0.5 + top, z = pz + 0.05},
-			minvel = {x = tx, y = -1.2, z = tz},
-			maxvel = {x = tx, y = -2.0, z = tz},
-			minacc = {x = ax, y = 0, z = az},
-			maxacc = {x = ax, y = 0, z = az},
-			-- Short, because displacement grows with the SQUARE of lifetime:
-			-- long-lived bubbles are what got flung out of the column.
-			minexptime = 0.25,
-			maxexptime = 0.45,
-		}))
-	end
-end
-
-local function spawn_particles(pos, kind, height)
-	if kind == "up" then
-		spawn_up_particles(pos, height)
-	else
-		spawn_down_particles(pos, height)
-	end
+		minsize = 0.7,
+		maxsize = 2.4,
+		collisiondetection = false,
+		-- Shipped by mcl_player for the underwater breath trail.  Luanti's
+		-- media namespace is flat, so no dependency is needed to use it.
+		texture = "mcl_particles_bubble.png",
+		glow = 2,
+	})
 end
 
 -- Counters, reported by /bubblecheck.  They are the difference between "the
@@ -843,59 +739,6 @@ core.register_chatcommand("bubbletaper", {
 			.. "             bubble_columns_surface_sink_scale = %s",
 			SURFACE_TAPER, SURFACE_SINK_SCALE * 100,
 			SURFACE_TAPER, SURFACE_SINK_SCALE)
-	end,
-})
-
--- Purely visual, so it can only be judged by looking at a whirlpool.  No
--- state to reset: spawners re-arm on their own every PARTICLE_PERIOD.
-core.register_chatcommand("bubblespiral", {
-	params = "[off | on | <spin> <pull> [<arms>]]",
-	description = "Show or set the whirlpool vortex shape",
-	privs = {server = true},
-	func = function(name, param)
-		local function report()
-			return string.format(
-				"spiral %s: spin=%.2f pull=%.2f arms=%d radius=%.2f turn=%.2f\n"
-				.. "  a bubble travels ~%.2f nodes around and is pulled ~%.2f "
-				.. "nodes inward over its life",
-				SPIRAL and "on" or "off", SPIRAL_SPIN, SPIRAL_PULL,
-				SPIRAL_ARMS, SPIRAL_RADIUS, SPIRAL_TURN,
-				SPIRAL_SPIN * 0.45, 0.5 * SPIRAL_PULL * 0.45 * 0.45)
-		end
-
-		if param == "" then
-			return true, report()
-		end
-		if param == "off" or param == "on" then
-			SPIRAL = param == "on"
-			return true, report()
-		end
-
-		local spin, pull, arms = param:match("^(%S+)%s+(%S+)%s*(%S*)$")
-		spin, pull = tonumber(spin), tonumber(pull)
-		if not spin or not pull then
-			return false, "usage: /bubblespiral off | on | <spin> <pull> [<arms>]"
-		end
-		if spin < 0 or spin > 4 or pull < 0 or pull > 8 then
-			return false, "spin 0-4, pull 0-8 -- larger values fling bubbles "
-				.. "clear of the column"
-		end
-		if arms ~= "" then
-			arms = tonumber(arms)
-			if not arms or arms < 1 or arms > 12 then
-				return false, "arms must be 1-12"
-			end
-			SPIRAL_ARMS = math.floor(arms)
-		end
-		SPIRAL_SPIN, SPIRAL_PULL = spin, pull
-		SPIRAL = true
-
-		return true, report() .. string.format(
-			"\n(takes up to %.0fs to show -- spawners re-arm on a timer)\n"
-			.. "to keep it:  bubble_columns_spiral_spin = %s\n"
-			.. "             bubble_columns_spiral_pull = %s\n"
-			.. "             bubble_columns_spiral_arms = %d",
-			PARTICLE_PERIOD, spin, pull, SPIRAL_ARMS)
 	end,
 })
 
