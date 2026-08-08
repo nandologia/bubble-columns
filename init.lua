@@ -52,13 +52,25 @@ local function dbg(fmt, ...)
 	end
 end
 
--- Soul *soil* deliberately absent: in Minecraft it has no bubble column, and
--- mcl_nether puts both it and soul sand in the `soul_block` group, so the
--- group is the wrong thing to test against here.
+-- Soul *soil* is deliberately absent by default: in Minecraft it makes no
+-- bubble column, only soul sand does.  They are separate nodes from separate
+-- mods (mcl_nether:soul_sand vs mcl_blackstone:soul_soil) that merely share
+-- the `soul_block` group -- which is exactly why the group is the wrong thing
+-- to test against, and why they are so easy to confuse in the inventory.
 local SOURCES = {
 	["mcl_nether:soul_sand"] = "up",
 	["mcl_nether:magma"] = "down",
 }
+
+if setting_bool("soul_soil_too", false) then
+	SOURCES["mcl_blackstone:soul_soil"] = "up"
+end
+
+-- Derived so the ABM and the scan can never disagree about what counts.
+local SOURCE_NAMES = {}
+for name in pairs(SOURCES) do
+	table.insert(SOURCE_NAMES, name)
+end
 
 local ABM_INTERVAL = 2
 -- Must exceed ABM_INTERVAL, or a column blinks out between refreshes.
@@ -199,7 +211,7 @@ end
 -- failure modes no longer break the feature.
 core.register_abm({
 	label = "bubble_columns: draw unoccupied columns",
-	nodenames = {"mcl_nether:soul_sand", "mcl_nether:magma"},
+	nodenames = SOURCE_NAMES,
 	-- Cheap rejection of every soul sand in the Nether, where there is no
 	-- water to make a column out of.
 	neighbors = {"group:water"},
@@ -400,6 +412,12 @@ core.register_chatcommand("bubblecheck", {
 			elseif not is_water(n) then
 				say("stage 1 FAIL: hit %s at %d before finding a source block",
 					n, y - i)
+				if n == "mcl_blackstone:soul_soil" then
+					say("  ^ that is Soul SOIL, not Soul SAND. They are different")
+					say("    blocks and only soul sand makes a column, as in")
+					say("    Minecraft. You want mcl_nether:soul_sand -- or set")
+					say("    bubble_columns_soul_soil_too = true to allow both.")
+				end
 				break
 			end
 		end

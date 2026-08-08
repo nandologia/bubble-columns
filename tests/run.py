@@ -52,7 +52,9 @@ local NODE_GROUPS = {
 	["mcl_core:water_source"]  = {water = 3, liquid = 3},
 	["mcl_core:water_flowing"] = {water = 3, liquid = 3},
 	["mcl_nether:soul_sand"]   = {soul_block = 1},
-	["mcl_nether:soul_soil"]   = {soul_block = 1},
+	-- Soul soil really does live in a different mod to soul sand, and really
+	-- does share the soul_block group with it. Both matter to this mod.
+	["mcl_blackstone:soul_soil"] = {soul_block = 1},
 	["mcl_nether:magma"]       = {fire = 1},
 }
 
@@ -290,10 +292,20 @@ def test_column_detection():
     check("kind is down", entry and entry.kind == "down", entry and entry.kind)
 
     # Soul soil shares the soul_block group but has no column in Minecraft.
-    build_column(lua, 10, 0, "mcl_nether:soul_soil", 4)
+    # This is the real-world mix-up that made the mod look broken in game.
+    build_column(lua, 10, 0, "mcl_blackstone:soul_soil", 4)
     g.RUN_ABM(10, 0, 0)
-    check("soul soil does NOT make a column",
+    check("soul soil does NOT make a column by default",
           g.bubble_columns.columns["10,0,0"] is None)
+
+    lua_soil = load_mod({"bubble_columns_soul_soil_too": True})
+    gs = lua_soil.globals()
+    build_column(lua_soil, 10, 0, "mcl_blackstone:soul_soil", 4)
+    gs.RUN_ABM(10, 0, 0)
+    entry = gs.bubble_columns.columns["10,0,0"]
+    check("soul_soil_too=true opts soul soil in", entry is not None)
+    check("opted-in soul soil lifts rather than sinks",
+          entry and entry.kind == "up", entry and entry.kind)
 
     # Source with no water above it.
     g.WORLD_SET(15, 0, 0, "mcl_nether:soul_sand")

@@ -18,11 +18,18 @@ update.
 
 ## How it works
 
-An ABM watches soul sand and magma with `neighbors = {"group:water"}`, which
-confines the scan to map blocks the engine already treats as active and rejects
-every dry soul sand in the Nether for free. Each hit measures the unbroken
-water column above the block, refreshes an entry in a registry, and re-arms a
-particle spawner.
+Detection is driven by the players. Every 0.1s each connected player is checked
+— one `get_node` if they aren't in water — and if they are, a downward scan
+looks for a soul sand or magma block under an unbroken run of water. Finding
+one registers a column.
+
+This began as an ABM on the source blocks instead, and it registered nothing at
+all in game. ABMs only run in active mapblocks and their scheduling isn't
+observable from Lua, so a column that never appeared couldn't be diagnosed. The
+player scan is deterministic, costs almost nothing when nobody is swimming, and
+is tied directly to the thing that has to be affected. An ABM is still
+registered, but only so unoccupied columns keep drawing their bubbles — where
+failing is merely cosmetic.
 
 A globalstep then walks that registry and does the physics. Keeping the
 registry means the expensive call — `get_objects_in_area` — scales with the

@@ -28,6 +28,11 @@ bubble_columns_down_gravity (Whirlpool gravity multiplier) float 3.0 1.0 10.0
 #    Minecraft. Magma whirlpools never refill air whatever this is set to.
 bubble_columns_restore_air (Updraft refills air) bool true
 
+#    Let Soul Soil make updrafts as well as Soul Sand. Minecraft does not do
+#    this -- only soul sand works there -- but the two blocks look alike and
+#    are easy to mix up, so enable this if you would rather both worked.
+bubble_columns_soul_soil_too (Soul soil makes columns too) bool false
+
 #    Trace column detection and physics to debug.txt. Very noisy; for
 #    diagnosing a column that does not seem to do anything.
 bubble_columns_debug (Debug logging) bool false
