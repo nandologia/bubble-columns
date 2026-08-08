@@ -375,6 +375,39 @@ def test_whirlpool_physics():
           close(fast._vel.y, -6), fast._vel.y)
 
 
+def test_standing_on_the_source_block():
+    """The in-game failure: standing ON the soul sand put the player at the
+    box's lower edge, so get_objects_in_area never returned them and nothing
+    happened. Players must not depend on that box at all."""
+    print("standing on the source block")
+    lua = load_mod()
+    g = lua.globals()
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 16)
+
+    # Source block at y=0 spans -0.5..0.5, so feet land at y=0.5 -- and float
+    # error can put them a hair either side of it. Both must work.
+    for label, feet_y in (("exactly on the top face", 0.5),
+                          ("a hair below it", 0.4999),
+                          ("a hair above it", 0.5001)):
+        lua_t = load_mod()
+        gt = lua_t.globals()
+        build_column(lua_t, 0, 0, "mcl_nether:soul_sand", 16)
+        player = gt.MAKE_OBJECT(0, feet_y, 0,
+                                lua_t.table(player=True, name="frank"))
+        gt.RUN_STEPS(0.5, 0.05)
+        check(f"player standing {label} is lifted",
+              gt.FACTOR(player, "gravity/bubble_columns:column") == -1.0,
+              gt.FACTOR(player, "gravity/bubble_columns:column"))
+
+    # An item resting on the block is inside the box now that it reaches down
+    # to the block's own cell. No player here, so the ABM has to register it.
+    g.RUN_ABM(0, 0, 0)
+    item = g.MAKE_OBJECT(0, 0.5, 0)
+    g.RUN_STEPS(0.5, 0.05)
+    check("an entity resting on the source block is carried", item._vel.y > 0,
+          item._vel.y)
+
+
 def test_selectivity():
     print("what must NOT be moved")
     lua = load_mod()
@@ -561,7 +594,7 @@ def test_bubblecheck_command():
     g.RUN_STEPS(0.5, 0.05)
     ok, text = cmd.func("erin")
     check("runs with a live column", ok is True)
-    for stage in ("stage 1 ok", "stage 3 ok", "stage 4 ok"):
+    for stage in ("stage 1 ok", "stage 3 ok"):
         check(f"reports {stage}", stage in text, text)
     check("reports the gravity override", "physics_override.gravity = -1" in text,
           text)
@@ -599,7 +632,8 @@ def test_particles():
 def main():
     print(f"bubble_columns offline tests  (lua {lupa.LuaRuntime().lua_implementation})\n")
     for test in (test_column_detection, test_max_height, test_updraft_physics,
-                 test_whirlpool_physics, test_selectivity, test_breath,
+                 test_whirlpool_physics, test_standing_on_the_source_block,
+                 test_selectivity, test_breath,
                  test_gravity_lift, test_join_cleanup,
                  test_bubblecheck_command, test_expiry, test_particles):
         test()

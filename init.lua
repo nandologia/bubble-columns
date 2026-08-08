@@ -182,29 +182,17 @@ local function find_source_below(pos)
 	return nil
 end
 
--- Primary detection: driven by the players themselves.
+-- The vertical span a column acts on, as a pair of corner positions.
 --
--- This started out as an ABM alone, which registered nothing in game -- ABMs
--- only run in active mapblocks and their scheduling is not observable from
--- Lua, so a column that never appeared was undiagnosable.  Scanning down from
--- each player is deterministic, costs one get_node when they are not in
--- water, and is tied directly to the thing that has to be affected.  The ABM
--- is kept below purely so columns are still drawn when nobody is inside one.
-local function scan_players()
-	for _, player in ipairs(core.get_connected_players()) do
-		local pos = player:get_pos()
-		if is_water(core.get_node(pos).name)
-			or is_water(core.get_node({x = pos.x, y = pos.y + 1.4, z = pos.z}).name) then
-			local source_pos, kind = find_source_below(pos)
-			if source_pos then
-				local height = measure_column(source_pos)
-				if height > 0 then
-					stats.scan_hits = stats.scan_hits + 1
-					register_column(source_pos, kind, height)
-				end
-			end
-		end
-	end
+-- The bottom is the *bottom* of the source block, not the top.  A player
+-- standing on the soul sand has their position at the block's top face, and
+-- floating point puts them a hair either side of it -- with the box starting
+-- exactly there, they tested as outside it and nothing happened.  Anything
+-- resting on the block should be carried, so the block's own cell is in.
+local function column_bounds(column)
+	local pos = column.pos
+	return {x = pos.x - 0.5, y = pos.y - 0.5, z = pos.z - 0.5},
+		{x = pos.x + 0.5, y = pos.y + 0.5 + column.height, z = pos.z + 0.5}
 end
 
 -- Secondary: keeps unoccupied columns visible.  Cosmetic only now, so its
@@ -307,39 +295,65 @@ local function drive_towards(obj, target, dtime)
 	return vel.y
 end
 
+-- Primary detection, driven by the players themselves.
+--
+-- This started out as an ABM alone, whose scheduling is not observable from
+-- Lua.  Scanning down from each player is deterministic, costs one get_node
+-- when they are not in water, and is tied directly to the thing that has to
+-- be affected.  The ABM is kept only so columns are still drawn when nobody
+-- is inside one.
+--
+-- Players are handled *here* rather than from the column's bounding box.  The
+-- scan found the column by looking down from the player, so the player is in
+-- it by construction -- no box membership test to get wrong, which is exactly
+-- what went wrong when standing on the source block put them a hair below the
+-- box and nothing happened.
+local function scan_players(present)
+	for _, player in ipairs(core.get_connected_players()) do
+		local pos = player:get_pos()
+		if is_water(core.get_node(pos).name)
+			or is_water(core.get_node({x = pos.x, y = pos.y + 1.4, z = pos.z}).name) then
+			local source_pos, kind = find_source_below(pos)
+			if source_pos then
+				local height = measure_column(source_pos)
+				if height > 0 then
+					stats.scan_hits = stats.scan_hits + 1
+					register_column(source_pos, kind, height)
+					local rising = kind == "up"
+					present[player] = true
+					begin_lift(player, rising)
+					if rising and RESTORE_AIR then
+						local max_breath = player:get_properties().breath_max or 10
+						if player:get_breath() < max_breath then
+							player:set_breath(max_breath)
+						end
+					end
+					dbg("scan: %s in %s column, v.y=%.2f",
+						player:get_player_name(), kind,
+						(player:get_velocity() or {y = 0}).y)
+				end
+			end
+		end
+	end
+end
+
+-- Entities only; players came through scan_players above.
 local function apply_column(column, dtime, present)
-	local pos = column.pos
-	local minp = {x = pos.x - 0.5, y = pos.y + 0.5, z = pos.z - 0.5}
-	local maxp = {x = pos.x + 0.5, y = pos.y + 0.5 + column.height, z = pos.z + 0.5}
+	local minp, maxp = column_bounds(column)
 	local rising = column.kind == "up"
 	local target = rising and UP_SPEED or -DOWN_SPEED
 
 	local found = core.get_objects_in_area(minp, maxp)
 	dbg("%s column at %s h=%d: %d object(s) in area",
-		column.kind, core.pos_to_string(pos), column.height, #found)
+		column.kind, core.pos_to_string(column.pos), column.height, #found)
 
 	for _, obj in ipairs(found) do
 		-- An attached object is driven by its parent; moving it here
 		-- would fight the attachment rather than carry the rider.
-		if obj:is_valid() and not obj:get_attach() then
+		if obj:is_valid() and not obj:get_attach() and not obj:is_player() then
 			present[obj] = true
 			begin_lift(obj, rising)
-			if obj:is_player() then
-				-- Client-side movement; the gravity override does the
-				-- work.  Pushing velocity here as well would only be
-				-- damped away and would break during fly.
-				local vel = obj:get_velocity()
-				dbg("player %s v.y=%.2f", obj:get_player_name(),
-					vel and vel.y or 0/0)
-			else
-				drive_towards(obj, target, dtime)
-			end
-			if rising and RESTORE_AIR and obj:is_player() then
-				local max_breath = obj:get_properties().breath_max or 10
-				if obj:get_breath() < max_breath then
-					obj:set_breath(max_breath)
-				end
-			end
+			drive_towards(obj, target, dtime)
 		end
 	end
 end
@@ -360,7 +374,7 @@ core.register_globalstep(function(dtime)
 
 	-- Discover before applying, so a player who just swam in is caught on
 	-- this same tick rather than the next one.
-	scan_players()
+	scan_players(present)
 
 	for hash, column in pairs(columns) do
 		if column.expires < now then
@@ -430,14 +444,12 @@ core.register_chatcommand("bubblecheck", {
 				registered and "ok" or "FAIL",
 				registered and "IS" or "is NOT")
 			if registered then
-				local minp = {x = source_pos.x - 0.5, y = source_pos.y + 0.5,
-					z = source_pos.z - 0.5}
-				local maxp = {x = source_pos.x + 0.5,
-					y = source_pos.y + 0.5 + registered.height,
-					z = source_pos.z + 0.5}
+				local minp, maxp = column_bounds(registered)
 				local n = #core.get_objects_in_area(minp, maxp)
-				say("stage 4 %s: %d object(s) inside the column box",
-					n > 0 and "ok" or "FAIL", n)
+				-- Informational, not pass/fail: players no longer depend on
+				-- this box, only entities do.
+				say("stage 4: %d object(s) in the column box (entities use", n)
+				say("         this; you do not -- the scan handles players)")
 			end
 		end
 
