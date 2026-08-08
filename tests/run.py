@@ -581,17 +581,21 @@ def test_liquid_overrides():
     player = g.MAKE_OBJECT(0, 4, 0, lua.table(player=True, name="gail"))
     g.RUN_STEPS(0.2, 0.05)
 
-    check("updraft sinks upward (negative liquid_sink)",
-          g.FACTOR(player, "liquid_sink/bubble_columns:column") == -1.6,
-          g.FACTOR(player, "liquid_sink/bubble_columns:column"))
+    sink = g.FACTOR(player, "liquid_sink/bubble_columns:column")
+    check("updraft makes the player neutrally buoyant", sink == 0, sink)
+    # A negative sink makes the client drive the player while the server
+    # clamps them: two controllers on one variable, which is what made the
+    # surface bounce grow. The server must be the only thing driving.
+    check("liquid_sink is NOT negative (client must not drive)",
+          sink is not None and sink >= 0, sink)
     check("updraft lowers liquid resistance",
-          g.FACTOR(player, "liquid_fluidity/bubble_columns:column") == 3.0,
+          g.FACTOR(player, "liquid_fluidity/bubble_columns:column") == 4.0,
           g.FACTOR(player, "liquid_fluidity/bubble_columns:column"))
     check("liquid_fluidity stays >= 1 (below 1 is unsupported)",
           g.FACTOR(player, "liquid_fluidity/bubble_columns:column") >= 1)
 
-    # Deadband: a player already near target must NOT be re-kicked.
-    player._vel = g.vector.new(0, 7.0, 0)   # target 8, deadband 1.5
+    # Deadband: a player already at target must NOT be re-kicked.
+    player._vel = g.vector.new(0, 7.8, 0)   # target 8, deadband 0.5
     before = player._vel.y
     g.RUN_STEPS(0.05, 0.05)
     check("no correction while within the deadband",
@@ -609,6 +613,20 @@ def test_liquid_overrides():
     for attr in ("gravity", "liquid_sink", "liquid_fluidity"):
         check(f"leaving restores {attr}",
               g.FACTOR(player, f"{attr}/bubble_columns:column") is None)
+
+    # A hand-edited minetest.conf must not be able to reintroduce the bounce.
+    lua_neg = load_mod({"bubble_columns_liquid_sink": -2.0,
+                        "bubble_columns_liquid_fluidity": 0.2})
+    gn = lua_neg.globals()
+    build_column(lua_neg, 0, 0, "mcl_nether:soul_sand", 16)
+    victim = gn.MAKE_OBJECT(0, 4, 0, lua_neg.table(player=True, name="mo"))
+    gn.RUN_STEPS(0.2, 0.05)
+    check("a negative liquid_sink from config is clamped to 0",
+          gn.FACTOR(victim, "liquid_sink/bubble_columns:column") == 0,
+          gn.FACTOR(victim, "liquid_sink/bubble_columns:column"))
+    check("a sub-1 liquid_fluidity from config is clamped to 1",
+          gn.FACTOR(victim, "liquid_fluidity/bubble_columns:column") == 1,
+          gn.FACTOR(victim, "liquid_fluidity/bubble_columns:column"))
 
     # A whirlpool must not get the lifting overrides.
     lua2 = load_mod()

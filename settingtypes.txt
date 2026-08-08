@@ -14,23 +14,25 @@ bubble_columns_down_speed (Whirlpool speed) float 6.0 0.0 40.0
 #    gravity multipliers below instead.
 bubble_columns_accel (Entity acceleration) float 30.0 1.0 200.0
 
-#    Multiplier on the client's liquid sinking speed while in an updraft.
-#    NEGATIVE sinks upward, and the client does it continuously at its own
-#    frame rate, which is what makes the climb smooth. More negative is
-#    faster. This is the main speed control, not up_speed.
-bubble_columns_liquid_sink (Updraft liquid sink multiplier) float -1.6 -6.0 0.0
+#    Multiplier on liquid sinking speed while in an updraft. 0 makes you
+#    neutrally buoyant so you hold position between velocity updates.
+#    Do NOT set this negative. A negative sink makes the CLIENT drive you
+#    upward while the server clamps you to up_speed, and the two fighting over
+#    one variable makes you bounce ever higher at the top of a column. Values
+#    below 0 are clamped to 0 with a warning in debug.txt.
+bubble_columns_liquid_sink (Updraft buoyancy) float 0.0 0.0 1.0
 
 #    Multiplier on liquid movement resistance while in an updraft; higher
 #    means less resistance. Without this the water damps the climb back down
 #    to ordinary swim-up speed no matter what else is set. Values below 1 are
 #    unsupported by the engine.
-bubble_columns_liquid_fluidity (Updraft fluidity) float 3.0 1.0 20.0
+bubble_columns_liquid_fluidity (Updraft fluidity) float 4.0 1.0 20.0
 
-#    How far below the target speed the player must fall before the server
-#    corrects their velocity. The liquid overrides above should hold the speed
-#    on their own; correcting every step is what makes the climb feel jerky,
-#    so this only exists as a floor. Lower it only if you never reach speed.
-bubble_columns_speed_deadband (Speed correction deadband) float 1.5 0.0 10.0
+#    Slack around the target speed before the server rewrites your velocity.
+#    Keep this small: the server correction IS the lift, so a wide deadband
+#    just lets you sag. It exists only to skip rewriting the velocity on steps
+#    where it has barely moved, which is what makes the climb feel jerky.
+bubble_columns_speed_deadband (Speed correction deadband) float 0.5 0.0 4.0
 
 #    Gravity multiplier for a player in an updraft. 0 neutralises gravity so
 #    it cannot claw back what the lift gains between steps. Do NOT set this

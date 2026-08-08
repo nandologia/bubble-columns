@@ -35,17 +35,22 @@ A globalstep then walks that registry and does the physics. Keeping the
 registry means the expensive call — `get_objects_in_area` — scales with the
 number of live columns rather than with the number of objects in the world.
 
-**The client's own liquid model does the lifting.** While a player is in an
-updraft the mod retunes it for them via `physics_override` (Luanti 5.8+):
-`liquid_sink` goes *negative*, so they sink upward, and `liquid_fluidity` goes
-up, lowering the resistance that otherwise damps any climb back down to
-ordinary swim-up speed. The client then moves them continuously at its own
-frame rate, which is what makes it smooth.
+**The server drives; the client only holds.** Exactly one thing controls
+vertical speed — the server, rewriting the player's velocity to the target
+every step. The client's liquid model is retuned via `physics_override`
+(Luanti 5.8+) only to stop it interfering: `liquid_fluidity` goes up so water
+resistance no longer damps the climb back to ordinary swim-up speed, and
+`liquid_sink` goes to 0 so the player holds position between updates. Neither
+of those *drives* anything.
 
-The server also tops their vertical velocity up, but only when it has fallen
-past `speed_deadband` below target — a floor, not the drive. Correcting every
-step is what makes the climb feel jerky: the server kicks at 20 Hz while the
-client damps at frame rate, and the sawtooth is felt as hiccuping.
+**Never give the client a drive of its own.** A negative `liquid_sink` makes
+the client accelerate the player upward toward its own target while the server
+clamps them to `up_speed` twenty times a second — two controllers on one
+variable, arbitrating against a velocity reading that lags the client. That
+fight pumps energy in, and at the surface it compounds: exit faster, arc
+higher, fall back faster, plunge deeper, exit faster still. Every bounce grew,
+and no amount of clamping could win it. The mod clamps a configured negative
+value back to 0 and logs a warning.
 
 Two things that look like they should work and don't:
 
@@ -54,8 +59,9 @@ Two things that look like they should work and don't:
   game: gravity forced to `-1.0` in a 16-deep column still gave `v.y = -0.30`,
   still sinking. The mod sets the factor to `0` only so gravity can't claw back
   what the lift gains.
-* **Raising `up_speed` alone does nothing.** Liquid resistance clamps the climb
-  to swim-up speed regardless; `liquid_fluidity` is what unlocks it.
+* **Raising `up_speed` alone did nothing** until `liquid_fluidity` was raised
+  too: liquid resistance clamps the climb to swim-up speed regardless. With
+  fluidity raised, `up_speed` is the speed control.
 
 **The lift is capped and tapers at the surface.** The speed correction clamps
 symmetrically — only ever *raising* it left the negative `liquid_sink` free to
@@ -156,9 +162,8 @@ columns).
 **Working in game** as of 2026-08-08 — verified lifting a player in a 16-deep
 column in Mineclonia 37652 on Luanti 5.16.1. 76 offline checks pass.
 
-The liquid-model overrides that make the climb fast and smooth are **not yet
-confirmed in game** — tune `liquid_sink` first if the speed is wrong, not
-`up_speed`. Also still to check: mobs, boats and dropped items in a column, a
+Tune `up_speed` for the climb rate and `surface_taper` for how it behaves at
+the top. Still to check: mobs, boats and dropped items in a column, a
 magma whirlpool, and particle density. Not yet deployed to the Gondor server.
 
 ## Compatibility

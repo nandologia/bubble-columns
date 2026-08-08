@@ -56,17 +56,41 @@ local UP_GRAVITY = setting_number("up_gravity", 0)
 -- the server re-kicking their velocity 20 times a second, which is what made
 -- it hiccup.
 --
--- liquid_sink is a multiplier on the sinking speed, so a negative value sinks
--- upward.  liquid_fluidity lowers the resistance that was otherwise damping
--- the climb back down to ordinary swim-up speed no matter how high UP_SPEED
--- was set.  (Values below 1 are explicitly unsupported for fluidity.)
-local LIQUID_SINK = setting_number("liquid_sink", -1.6)
-local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 3.0)
--- Only correct the velocity when it has fallen this far below target.  With
--- the overrides doing the work the correction should rarely fire at all; it
--- is a floor, not the drive, and firing it every step is what causes the
--- sawtooth the player feels as hiccuping.
-local SPEED_DEADBAND = setting_number("speed_deadband", 1.5)
+-- liquid_sink is a multiplier on the sinking speed; 0 makes the player
+-- neutrally buoyant so they hold position between velocity updates.
+--
+-- Do NOT set it negative.  A negative sink makes the *client* drive the
+-- player upward towards its own target while the server clamps them to
+-- UP_SPEED twenty times a second -- two controllers fighting over one
+-- variable, against a velocity reading that lags the client.  That fight was
+-- the energy source behind the bounce that grew with every cycle; it appeared
+-- in exactly the change that introduced the negative sink, and no amount of
+-- clamping could win it.  The server drives, the client holds.
+--
+-- liquid_fluidity lowers the resistance that otherwise damps the climb back
+-- down to ordinary swim-up speed no matter how high UP_SPEED is set.  It does
+-- not drive anything by itself, so it cannot fight the server.  (Values below
+-- 1 are explicitly unsupported.)
+local LIQUID_SINK = setting_number("liquid_sink", 0)
+local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 4.0)
+
+if LIQUID_SINK < 0 then
+	core.log("warning", "[bubble_columns] liquid_sink was set to "
+		.. LIQUID_SINK .. "; clamped to 0. A negative sink makes the client "
+		.. "fight the server for control of vertical speed, which makes the "
+		.. "player bounce ever higher at the top of a column.")
+	LIQUID_SINK = 0
+end
+-- Below 1 is unsupported by the engine and silently misbehaves.
+if LIQUID_FLUIDITY < 1 then
+	LIQUID_FLUIDITY = 1
+end
+-- Slack around the target before the velocity is rewritten.  Small: with
+-- nothing else driving the player, this correction *is* the lift, and a wide
+-- deadband would just let them sag.  It exists only to avoid rewriting the
+-- velocity on steps where it has barely moved, which is what makes the climb
+-- feel like a sawtooth.
+local SPEED_DEADBAND = setting_number("speed_deadband", 0.5)
 -- Distance below the water surface over which the updraft eases off, in
 -- nodes.  Without this the lift runs at full speed right up to the surface
 -- and fires the player clear of it; they then fall back in and are lifted
@@ -363,12 +387,9 @@ end
 -- Hold `obj` at `target` vertical speed, correcting only once it has drifted
 -- further than `deadband` either side of it.
 --
--- The clamp has to be symmetric.  Only ever raising the speed left the
--- negative liquid_sink override free to accelerate the player upward without
--- any ceiling, and that closes a feedback loop at the surface: a deeper
--- plunge gives the acceleration a longer runway, so they exit faster, arc
--- higher, fall back faster, plunge deeper still.  That is what made each
--- bounce bigger than the last.  Capping the speed opens the loop.
+-- The clamp is symmetric: this holds the player *at* the target rather than
+-- pushing them towards it, so nothing -- neither the client nor a plunge from
+-- above -- can carry them past it and turn the surface into a trampoline.
 local function force_speed(obj, target, deadband)
 	local vel = obj:get_velocity()
 	if not vel then return end
