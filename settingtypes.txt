@@ -14,15 +14,12 @@ bubble_columns_down_speed (Whirlpool speed) float 6.0 0.0 40.0
 #    gravity multipliers below instead.
 bubble_columns_accel (Entity acceleration) float 30.0 1.0 200.0
 
-#    Player gravity multiplier inside an updraft. Negative lifts; -1.0 rises
-#    about as fast as normal falling. Players are moved this way rather than
-#    by a velocity push, which the client's liquid drag cancels out and which
-#    does nothing at all in fly mode.
-bubble_columns_up_gravity (Updraft gravity multiplier) float -1.0 -5.0 0.0
-
-#    Player gravity multiplier inside a magma whirlpool. Above 1.0 sinks
-#    faster than normal.
-bubble_columns_down_gravity (Whirlpool gravity multiplier) float 3.0 1.0 10.0
+#    Gravity multiplier for a player in an updraft. 0 neutralises gravity so
+#    it cannot claw back what the lift gains between steps. Do NOT set this
+#    negative expecting it to lift: gravity overrides have almost no effect on
+#    a player inside a liquid, where the client uses its own liquid movement
+#    model. The lifting is done by the speed setting above.
+bubble_columns_up_gravity (Updraft gravity multiplier) float 0.0 -2.0 1.0
 
 #    Refill the player's air while they ride a soul sand column, as in
 #    Minecraft. Magma whirlpools never refill air whatever this is set to.

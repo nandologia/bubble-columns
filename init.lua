@@ -35,11 +35,20 @@ local DOWN_SPEED = setting_number("down_speed", 6)
 -- How hard an entity is pulled towards that speed, m/s^2.  Entities only;
 -- players are moved by the gravity factors below instead.
 local ACCEL = setting_number("accel", 30)
--- Player gravity multipliers while in a column.  Negative lifts; the engine
--- applies it through the client's own movement code, so it survives liquid
--- drag and works where a velocity push does not.
-local UP_GRAVITY = setting_number("up_gravity", -1.0)
-local DOWN_GRAVITY = setting_number("down_gravity", 3.0)
+-- Gravity multiplier applied to a player in an updraft.
+--
+-- KEY ENGINE FACT: physics_override.gravity does NOT lift a player who is in
+-- a liquid.  Luanti's client uses its liquid movement model there
+-- (movement_liquid_sink / movement_liquid_fluidity), not gravity
+-- acceleration.  Measured in game: gravity forced to -1.0 while standing in a
+-- 16-deep column still gave v.y = -0.30, i.e. still sinking.
+--
+-- So this is 0, not negative: it stops gravity fighting the velocity drive
+-- between steps and keeps the player from being yanked back down the instant
+-- they breach the surface.  The actual lifting is done by topping velocity up
+-- every server step, which is what mcl_potions' levitation does and why that
+-- effect works underwater.
+local UP_GRAVITY = setting_number("up_gravity", 0)
 -- Minecraft's updraft keeps you breathing; its whirlpool does not.
 local RESTORE_AIR = setting_bool("restore_air", true)
 -- Traces the whole pipeline to debug.txt: column found -> object in area ->
@@ -232,26 +241,39 @@ core.register_abm({
 -- add_velocity does exactly what it says, so those keep the velocity drive.
 local LIFT_ID = "bubble_columns:column"
 
--- What each object is currently being held at: "up", "down", or absent.
--- Tracked because playerphysics serialises into player meta on every call,
--- so the factor must be written on entry and cleared on exit, never per tick.
+-- obj -> {kind = "up"|"down", last_seen = <time>}.
+--
+-- Timestamped rather than rebuilt from a per-tick set because players are now
+-- refreshed every server step while entities are only swept every
+-- OBJECT_INTERVAL; a single shared "seen this tick" set would release
+-- entities the moment a step ran without an entity pass.
 local lifted = {}
+-- How long an object keeps its hold after it stops being refreshed.  Must
+-- comfortably exceed OBJECT_INTERVAL.
+local LIFT_GRACE = 0.3
 
 local function begin_lift(obj, rising)
 	local want = rising and "up" or "down"
-	if lifted[obj] == want then return end
-	lifted[obj] = want
-	if obj:is_player() then
-		-- Negative gravity means the engine accelerates them upward; water
-		-- drag caps the speed on its own, much as it does when falling.
-		playerphysics.add_physics_factor(obj, "gravity", LIFT_ID,
-			rising and UP_GRAVITY or DOWN_GRAVITY)
-		dbg("gravity factor %.2f for %s",
-			rising and UP_GRAVITY or DOWN_GRAVITY, obj:get_player_name())
-	elseif rising then
-		local entity = obj:get_luaentity()
-		if entity and entity.is_mob and entity.add_physics_factor then
-			entity:add_physics_factor("fall_speed", LIFT_ID, 0)
+	local state = lifted[obj]
+	if state then
+		state.last_seen = now
+		if state.kind == want then return end
+		state.kind = want
+	else
+		lifted[obj] = {kind = want, last_seen = now}
+	end
+	-- Only the updraft needs the hold: it keeps gravity from clawing back
+	-- what the velocity drive gains between steps.  A whirlpool wants
+	-- gravity exactly as it is.
+	if rising then
+		if obj:is_player() then
+			playerphysics.add_physics_factor(obj, "gravity", LIFT_ID, UP_GRAVITY)
+			dbg("gravity factor %.2f for %s", UP_GRAVITY, obj:get_player_name())
+		else
+			local entity = obj:get_luaentity()
+			if entity and entity.is_mob and entity.add_physics_factor then
+				entity:add_physics_factor("fall_speed", LIFT_ID, 0)
+			end
 		end
 	end
 end
@@ -295,7 +317,22 @@ local function drive_towards(obj, target, dtime)
 	return vel.y
 end
 
--- Primary detection, driven by the players themselves.
+-- Force `obj` to `target` vertical speed outright, rather than easing towards
+-- it.  In a liquid the client bleeds an injected velocity away within a
+-- frame or two, so anything gentler simply never accumulates -- this is the
+-- shape mcl_potions' levitation uses, and why that effect works underwater.
+-- Only ever speeds an object up in the intended direction; something already
+-- moving faster that way is left alone.
+local function force_speed(obj, target)
+	local vel = obj:get_velocity()
+	if not vel then return end
+	if (target > 0 and vel.y < target) or (target < 0 and vel.y > target) then
+		obj:add_velocity({x = 0, y = target - vel.y, z = 0})
+	end
+end
+
+-- Primary detection, driven by the players themselves, and the whole of the
+-- player physics.
 --
 -- This started out as an ABM alone, whose scheduling is not observable from
 -- Lua.  Scanning down from each player is deterministic, costs one get_node
@@ -303,12 +340,17 @@ end
 -- be affected.  The ABM is kept only so columns are still drawn when nobody
 -- is inside one.
 --
--- Players are handled *here* rather than from the column's bounding box.  The
+-- Players are driven *here* rather than from the column's bounding box: the
 -- scan found the column by looking down from the player, so the player is in
--- it by construction -- no box membership test to get wrong, which is exactly
--- what went wrong when standing on the source block put them a hair below the
--- box and nothing happened.
-local function scan_players(present)
+-- it by construction.  There is no membership test left to get wrong, which
+-- is what went wrong when standing on the source block put them a hair below
+-- the box.
+--
+-- Called every server step, not on the entity cadence.  A 0.1s top-up is not
+-- enough -- liquid drag eats the injected velocity between ticks, which is
+-- why the earlier version left the player sinking at -0.30 with the gravity
+-- override already applied.
+local function scan_players()
 	for _, player in ipairs(core.get_connected_players()) do
 		local pos = player:get_pos()
 		if is_water(core.get_node(pos).name)
@@ -320,17 +362,14 @@ local function scan_players(present)
 					stats.scan_hits = stats.scan_hits + 1
 					register_column(source_pos, kind, height)
 					local rising = kind == "up"
-					present[player] = true
 					begin_lift(player, rising)
+					force_speed(player, rising and UP_SPEED or -DOWN_SPEED)
 					if rising and RESTORE_AIR then
 						local max_breath = player:get_properties().breath_max or 10
 						if player:get_breath() < max_breath then
 							player:set_breath(max_breath)
 						end
 					end
-					dbg("scan: %s in %s column, v.y=%.2f",
-						player:get_player_name(), kind,
-						(player:get_velocity() or {y = 0}).y)
 				end
 			end
 		end
@@ -338,7 +377,7 @@ local function scan_players(present)
 end
 
 -- Entities only; players came through scan_players above.
-local function apply_column(column, dtime, present)
+local function apply_column(column, dtime)
 	local minp, maxp = column_bounds(column)
 	local rising = column.kind == "up"
 	local target = rising and UP_SPEED or -DOWN_SPEED
@@ -351,7 +390,6 @@ local function apply_column(column, dtime, present)
 		-- An attached object is driven by its parent; moving it here
 		-- would fight the attachment rather than carry the rider.
 		if obj:is_valid() and not obj:get_attach() and not obj:is_player() then
-			present[obj] = true
 			begin_lift(obj, rising)
 			drive_towards(obj, target, dtime)
 		end
@@ -359,35 +397,37 @@ local function apply_column(column, dtime, present)
 end
 
 local object_timer = 0
-local present = {}
 
 core.register_globalstep(function(dtime)
 	now = now + dtime
+
+	-- Every step, deliberately.  This is the whole reason the mod works:
+	-- liquid drag bleeds an injected velocity away between ticks, so the
+	-- top-up has to be as frequent as the client's own simulation -- the
+	-- same cadence mcl_potions gives levitation, and so shulker bullets.
+	scan_players()
+
 	object_timer = object_timer + dtime
 	if object_timer < OBJECT_INTERVAL then return end
 	local elapsed = object_timer
 	object_timer = 0
 
-	for obj in pairs(present) do
-		present[obj] = nil
-	end
-
-	-- Discover before applying, so a player who just swam in is caught on
-	-- this same tick rather than the next one.
-	scan_players(present)
-
+	-- Entities are server-side and far more numerous, so they stay on the
+	-- coarser cadence; get_objects_in_area is the expensive call here.
 	for hash, column in pairs(columns) do
 		if column.expires < now then
 			columns[hash] = nil
 		else
-			apply_column(column, elapsed, present)
+			apply_column(column, elapsed)
 		end
 	end
 
-	-- Anything that was being lifted and is no longer in any column gets
-	-- its gravity back.  Clearing a key during pairs() is well defined.
-	for obj in pairs(lifted) do
-		if not present[obj] then
+	-- Release anything that has stopped being refreshed by either pass.
+	-- Timestamps rather than a per-tick set, because the two passes run at
+	-- different rates and a shared set would release entities on the steps
+	-- that had no entity pass.  Clearing a key during pairs() is well defined.
+	for obj, state in pairs(lifted) do
+		if now - state.last_seen > LIFT_GRACE then
 			end_lift(obj)
 		end
 	end

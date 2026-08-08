@@ -18,10 +18,10 @@ update.
 
 ## How it works
 
-Detection is driven by the players. Every 0.1s each connected player is checked
-— one `get_node` if they aren't in water — and if they are, a downward scan
-looks for a soul sand or magma block under an unbroken run of water. Finding
-one registers a column.
+Detection is driven by the players. Every server step each connected player is
+checked — one `get_node` if they aren't in water — and if they are, a downward
+scan looks for a soul sand or magma block under an unbroken run of water.
+Finding one registers a column and drives that player on the spot.
 
 This began as an ABM on the source blocks instead, and it registered nothing at
 all in game. ABMs only run in active mapblocks and their scheduling isn't
@@ -35,27 +35,40 @@ A globalstep then walks that registry and does the physics. Keeping the
 registry means the expensive call — `get_objects_in_area` — scales with the
 number of live columns rather than with the number of objects in the world.
 
-**Players and entities are moved by completely different means, and this
-matters.** A player is moved by the *client*, which runs its own gravity and
-liquid drag every frame. `add_velocity` on a player is a single nudge into that
-simulation: the drag eats it between server ticks, and `lua_api.md` states it
-does nothing at all during `free_move` — easy to be in inside a creative world.
-So players are not pushed. Their gravity is *inverted* with a physics override
-and the client's own movement code does the lifting; water drag caps the speed
-by itself, exactly as it does when falling. Entities (mobs, boats, dropped
-items) are simulated server-side, where `add_velocity` behaves, so those are
-driven *towards* a terminal speed — which also means an entity already falling
-fast gets braked to the whirlpool's speed rather than accelerated past it.
+**Players are driven every server step, and that cadence is the whole trick.**
+A player is moved by the *client*, which runs its own liquid model every frame
+and bleeds an injected velocity away within a tick or two. Topping their
+vertical speed up on a 0.1s cadence is not enough; doing it every step is. This
+is exactly what `mcl_potions` does for levitation — and so what shulker bullets
+rely on — which is why that effect lifts you underwater when other approaches
+don't.
+
+Two things that look like they should work and don't:
+
+* **`physics_override.gravity` does not lift a player in a liquid.** Luanti's
+  client uses its liquid movement model there (`movement_liquid_sink` /
+  `movement_liquid_fluidity`), not gravity acceleration. Measured in game:
+  gravity forced to `-1.0` in a 16-deep column still gave `v.y = -0.30`, still
+  sinking. The mod sets the factor to `0` only so gravity can't claw back what
+  the lift gains between steps.
+* **Easing towards the target speed** never accumulates against that drag. The
+  drive sets the velocity outright, only ever in the intended direction, so
+  something already moving faster that way is left alone.
+
+Entities (mobs, boats, dropped items) are simulated server-side where
+`add_velocity` behaves normally, so they stay on the coarser cadence and are
+eased towards a terminal speed — which also means an entity already falling
+fast is braked to the whirlpool's speed rather than accelerated past it.
 
 ## Diagnosing a column that does nothing
 
     /bubblecheck
 
 Run it standing in the column. It walks every stage — source block found,
-column height measured, column present in the live registry, player inside the
-column's bounding box, gravity override applied — and names the one that fails.
-If it reports the gravity override as correct and you still don't move, you're
-in fly mode; press `K`.
+column height measured, column present in the live registry, objects in the
+box, gravity hold applied — names the one that fails, and reports your actual
+`v.y`. That last number is the one that matters: it is what proved the gravity
+override was being applied and doing nothing.
 
 `bubble_columns_debug = true` in `minetest.conf` traces the same pipeline to
 `debug.txt` continuously, which is noisier but catches intermittent problems.
@@ -66,9 +79,12 @@ flat, so it needs no dependency and the mod ships no textures of its own.
 
 ## Behaviour notes
 
-* **Soul soil does not make a column**, matching Minecraft. `mcl_nether` puts
-  soul soil and soul sand in the same `soul_block` group, so the group is the
-  wrong thing to test — the mod matches the node name.
+* **Soul soil does not make a column**, matching Minecraft. Note that Soul Sand
+  is `mcl_nether:soul_sand` while Soul Soil is `mcl_blackstone:soul_soil` —
+  different mods, no alias, sharing only the `soul_block` group, and near
+  identical in the creative inventory. That is why the mod matches node names
+  rather than the group, and why it is so easy to build a test column on the
+  wrong block. Set `bubble_columns_soul_soil_too = true` to allow both.
 * **Updrafts refill your air, whirlpools do not.** This mirrors Minecraft, and
   is what makes a magma whirlpool actually dangerous. Turn it off with
   `bubble_columns_restore_air = false`.
@@ -89,8 +105,7 @@ settings menu.
 | `bubble_columns_up_speed` | 8.0 | terminal updraft speed, nodes/s |
 | `bubble_columns_down_speed` | 6.0 | terminal whirlpool speed, nodes/s |
 | `bubble_columns_accel` | 30.0 | how sharply an *entity* reaches that speed, nodes/s² |
-| `bubble_columns_up_gravity` | -1.0 | *player* gravity multiplier in an updraft; negative lifts |
-| `bubble_columns_down_gravity` | 3.0 | *player* gravity multiplier in a whirlpool |
+| `bubble_columns_up_gravity` | 0.0 | *player* gravity multiplier in an updraft; 0 = neutral, NOT a lift |
 | `bubble_columns_restore_air` | true | updraft refills the player's air |
 | `bubble_columns_debug` | false | trace the pipeline to `debug.txt` |
 
@@ -108,9 +123,12 @@ columns).
 
 ## Status
 
-Offline tests pass. **Not yet verified in game** — the numbers most likely to
-need tuning by feel are `up_speed` and `accel`, and the particle density in
-`spawn_particles`.
+**Working in game** as of 2026-08-08 — verified lifting a player in a 16-deep
+column in Mineclonia 37652 on Luanti 5.16.1. 65 offline checks pass.
+
+Still to do: tune `up_speed` and the particle density in `spawn_particles` by
+feel, confirm mobs / boats / dropped items behave, and try a magma whirlpool.
+Not yet deployed to the Gondor server.
 
 ## Compatibility
 

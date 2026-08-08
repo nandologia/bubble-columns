@@ -252,7 +252,7 @@ def check(label, condition, detail=""):
     if condition:
         print(f"  ok   {label}")
     else:
-        print(f"  FAIL {label}{('  -- ' + detail) if detail else ''}")
+        print(f"  FAIL {label}{('  -- ' + str(detail)) if detail != '' else ''}")
         FAILURES.append(label)
 
 
@@ -396,7 +396,7 @@ def test_standing_on_the_source_block():
                                 lua_t.table(player=True, name="frank"))
         gt.RUN_STEPS(0.5, 0.05)
         check(f"player standing {label} is lifted",
-              gt.FACTOR(player, "gravity/bubble_columns:column") == -1.0,
+              gt.FACTOR(player, "gravity/bubble_columns:column") == 0,
               gt.FACTOR(player, "gravity/bubble_columns:column"))
 
     # An item resting on the block is inside the box now that it reaches down
@@ -497,20 +497,24 @@ def test_gravity_lift():
     mob = g.MAKE_OBJECT(0, 2, 0, lua.table(mob=True))
 
     g.RUN_STEPS(0.5, 0.05)
-    check("updraft INVERTS the player's gravity (engine does the lifting)",
-          g.FACTOR(player, "gravity/bubble_columns:column") == -1.0,
+    # Gravity is neutralised, not inverted: measured in game, a negative
+    # gravity override does NOT lift a player inside a liquid.
+    check("updraft neutralises the player's gravity",
+          g.FACTOR(player, "gravity/bubble_columns:column") == 0,
           g.FACTOR(player, "gravity/bubble_columns:column"))
     check("updraft zeroes a mob's fall_speed factor",
           g.MOB_FACTOR(mob, "fall_speed/bubble_columns:column") == 0)
-    check("whirlpool increases the player's gravity",
-          g.FACTOR(sinker, "gravity/bubble_columns:column") == 3.0,
+    check("whirlpool leaves gravity alone (it is an ally there)",
+          g.FACTOR(sinker, "gravity/bubble_columns:column") is None,
           g.FACTOR(sinker, "gravity/bubble_columns:column"))
 
-    # The whole point of the rewrite: a player must NOT be velocity-pushed,
-    # because the client damps it and it is a no-op during fly.
-    check("player is not velocity-pushed", close(player._vel.y, 0),
+    # The thing that actually made it work in game: the player IS driven to
+    # the target speed, every step, rather than left to a gravity override.
+    check("player is driven to updraft speed", close(player._vel.y, 8),
           player._vel.y)
-    check("entity in the same column IS velocity-pushed", mob._vel.y > 0,
+    check("player is driven to whirlpool speed", close(sinker._vel.y, -6),
+          sinker._vel.y)
+    check("entity in the same column is also driven", mob._vel.y > 0,
           mob._vel.y)
 
     # Setting the factor writes player meta, so it must happen once on entry,
@@ -542,14 +546,14 @@ def test_gravity_lift():
     stuck = g2.MAKE_OBJECT(0, 2, 0, lua2.table(player=True, name="carol"))
     g2.RUN_STEPS(0.5, 0.05)
     check("player scan alone discovers the column (ABM never run)",
-          g2.FACTOR(stuck, "gravity/bubble_columns:column") == -1.0,
+          g2.FACTOR(stuck, "gravity/bubble_columns:column") == 0,
           g2.FACTOR(stuck, "gravity/bubble_columns:column"))
 
     # While someone stands in it the scan keeps refreshing it, so it must not
     # time out under them.
     g2.RUN_STEPS(10.0, 0.1)
     check("column does not expire while a player stands in it",
-          g2.FACTOR(stuck, "gravity/bubble_columns:column") == -1.0)
+          g2.FACTOR(stuck, "gravity/bubble_columns:column") == 0)
 
     # Digging the source block out must release them.
     g2.WORLD_SET(0, 0, 0, "mcl_core:stone")
@@ -596,7 +600,7 @@ def test_bubblecheck_command():
     check("runs with a live column", ok is True)
     for stage in ("stage 1 ok", "stage 3 ok"):
         check(f"reports {stage}", stage in text, text)
-    check("reports the gravity override", "physics_override.gravity = -1" in text,
+    check("reports the gravity override", "physics_override.gravity = 0" in text,
           text)
 
     # Unknown player must be handled, not crash.
