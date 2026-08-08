@@ -585,7 +585,7 @@ def test_liquid_overrides():
 
     sink = g.FACTOR(player, "liquid_sink/bubble_columns:column")
     check("updraft sinks upward (negative liquid_sink is the lift)",
-          sink == -0.45, sink)
+          sink == -1.4, sink)
     check("updraft lowers liquid resistance",
           g.FACTOR(player, "liquid_fluidity/bubble_columns:column") == 1.5,
           g.FACTOR(player, "liquid_fluidity/bubble_columns:column"))
@@ -668,7 +668,7 @@ def test_surface_resonance():
     deep = gt.MAKE_OBJECT(0, 3, 0, lua_t.table(player=True, name="kim"))
     gt.RUN_STEPS(0.05, 0.05)
     check("full sink deep in the column",
-          gt.FACTOR(deep, "liquid_sink/bubble_columns:column") == -0.45,
+          gt.FACTOR(deep, "liquid_sink/bubble_columns:column") == -1.4,
           gt.FACTOR(deep, "liquid_sink/bubble_columns:column"))
 
     # Surface is at 0.5 + 16 = 16.5, taper starts 2.5 below it. The head sits
@@ -678,7 +678,7 @@ def test_surface_resonance():
     gt.RUN_STEPS(0.05, 0.05)
     sink_near = gt.FACTOR(near, "liquid_sink/bubble_columns:column")
     check("sink eased off approaching the surface",
-          close(sink_near, -0.45 * 0.3), sink_near)
+          close(sink_near, -1.4 * 0.3), sink_near)
     check("still rising near the surface, not stalled", sink_near < 0, sink_near)
 
     # The taper is a state change, not a per-step recalculation --
@@ -749,6 +749,41 @@ def test_bubblecheck_command():
     check("unknown player is handled", ok is False)
 
 
+def test_bubblespeed_command():
+    """Climb speed can only be judged by riding a column, so it must be
+    tunable without a restart."""
+    print("/bubblespeed live tuning")
+    lua = load_mod()
+    g = lua.globals()
+    cmd = g.CHATCOMMANDS["bubblespeed"]
+    check("command is registered", cmd is not None)
+
+    ok, text = cmd.func("nando", "")
+    check("reports the current speed with no argument",
+          ok is True and "-1.40" in text, text)
+
+    for bad, why in ((" ", "not a number"), ("fast", "not a number"),
+                     ("2", "positive would sink"), ("-99", "beyond tested")):
+        ok, _ = cmd.func("nando", bad)
+        check(f"rejects {bad!r} ({why})", ok is False)
+
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 16)
+    player = g.MAKE_OBJECT(0, 4, 0, lua.table(player=True, name="nando"))
+    g.RUN_STEPS(0.2, 0.05)
+    check("player lifted at the old speed",
+          g.FACTOR(player, "liquid_sink/bubble_columns:column") == -1.4)
+
+    ok, text = cmd.func("nando", "-2.2")
+    check("accepts a new speed", ok is True)
+    check("tells the user how to persist it",
+          "bubble_columns_liquid_sink = -2.2" in text, text)
+
+    g.RUN_STEPS(0.2, 0.05)
+    check("already-lifted player picks up the new speed without relogging",
+          g.FACTOR(player, "liquid_sink/bubble_columns:column") == -2.2,
+          g.FACTOR(player, "liquid_sink/bubble_columns:column"))
+
+
 def test_particles():
     print("particles")
     lua = load_mod()
@@ -786,7 +821,8 @@ def main():
                  test_selectivity, test_breath,
                  test_gravity_lift, test_liquid_overrides, test_surface_resonance,
                  test_join_cleanup,
-                 test_bubblecheck_command, test_expiry, test_particles):
+                 test_bubblecheck_command, test_bubblespeed_command,
+                 test_expiry, test_particles):
         test()
         print()
 

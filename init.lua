@@ -71,7 +71,9 @@ local UP_GRAVITY = setting_number("up_gravity", 0)
 -- the client applies it continuously at its own frame rate.  One controller,
 -- no stale feedback, smooth by construction.  This is the speed control for
 -- players; UP_SPEED applies only to entities.
-local LIQUID_SINK = setting_number("liquid_sink", -0.45)
+-- Not `local ... =` only: /bubblespeed rewrites this at runtime so the climb
+-- can be dialled in without a restart.
+local LIQUID_SINK = setting_number("liquid_sink", -1.4)
 -- Only removes resistance, so it cannot drive anything on its own.  Kept
 -- modest: high fluidity also makes the player retain momentum like air, which
 -- is what let them carry speed up out of the water.
@@ -93,7 +95,10 @@ end
 -- and fires the player clear of it; they then fall back in and are lifted
 -- again, which reads as bouncing however well behaved each individual launch
 -- is.  Tapering lets them surface and simply float.
-local SURFACE_TAPER = setting_number("surface_taper", 2.5)
+-- Wider than it looks like it needs to be: at full climb speed the player
+-- crosses a couple of nodes in a fraction of a second, which is not long
+-- enough for liquid drag to shed the speed before they reach the surface.
+local SURFACE_TAPER = setting_number("surface_taper", 4.0)
 -- Minecraft's updraft keeps you breathing; its whirlpool does not.
 local RESTORE_AIR = setting_bool("restore_air", true)
 -- Traces the whole pipeline to debug.txt: column found -> object in area ->
@@ -636,6 +641,44 @@ core.register_chatcommand("bubblecheck", {
 		say("      press K to leave fly mode and try again.")
 
 		return true, table.concat(out, "\n")
+	end,
+})
+
+-- Climb speed is the one number that can only be judged by riding a column,
+-- so make it adjustable without a restart.  Runtime only: the command prints
+-- the line to put in minetest.conf once a value feels right.
+core.register_chatcommand("bubblespeed", {
+	params = "[<sink>]",
+	description = "Show or set the bubble column climb speed (negative rises)",
+	privs = {server = true},
+	func = function(name, param)
+		if param == "" then
+			return true, string.format(
+				"climb speed (liquid_sink) = %.2f -- more negative is faster",
+				LIQUID_SINK)
+		end
+		local value = tonumber(param)
+		if not value then
+			return false, "expected a number, e.g. /bubblespeed -1.8"
+		end
+		if value > 0 then
+			return false, "must be 0 or negative; negative is what rises"
+		end
+		if value < -6 then
+			return false, "below -6 is faster than anything is tested at"
+		end
+		LIQUID_SINK = value
+
+		-- Drop every current hold so the new value is applied on the next
+		-- step; begin_lift is a no-op while the state is unchanged.
+		for obj in pairs(lifted) do
+			end_lift(obj)
+		end
+
+		return true, string.format(
+			"climb speed = %.2f (this session only)\n"
+			.. "to keep it, add to minetest.conf:  bubble_columns_liquid_sink = %s",
+			value, param)
 	end,
 })
 

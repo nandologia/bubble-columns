@@ -16,12 +16,13 @@ bubble_columns_down_speed (Whirlpool speed) float 6.0 0.0 40.0
 bubble_columns_accel (Entity acceleration) float 30.0 1.0 200.0
 
 #    THE CLIMB SPEED CONTROL for players. Multiplier on liquid sink speed,
-#    so negative rises. More negative is faster; -0.45 is a gentle climb.
+#    so negative rises. More negative is faster. Tune it live in game with
+#    /bubblespeed rather than by restarting.
 #    The client applies this continuously at its own frame rate, which is why
 #    the climb is smooth. The server never touches a rising player's velocity:
 #    doing so arbitrates against a reading that lags the client, which caused
 #    both jitter and a bounce that grew at the surface.
-bubble_columns_liquid_sink (Updraft climb speed) float -0.45 -3.0 0.0
+bubble_columns_liquid_sink (Updraft climb speed) float -1.4 -6.0 0.0
 
 #    Multiplier on liquid movement resistance while in an updraft; higher
 #    means less resistance. Keep this modest: high values also let you retain
@@ -58,4 +59,4 @@ bubble_columns_debug (Debug logging) bool false
 #    Without this the lift runs at full speed right up to the surface and
 #    fires you clear of it; you fall back in, get lifted again, and it reads
 #    as bouncing. Set to 0 for a Minecraft-style launch out of the top.
-bubble_columns_surface_taper (Surface taper distance) float 2.5 0.0 8.0
+bubble_columns_surface_taper (Surface taper distance) float 4.0 0.0 12.0
