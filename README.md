@@ -27,9 +27,31 @@ particle spawner.
 A globalstep then walks that registry and does the physics. Keeping the
 registry means the expensive call — `get_objects_in_area` — scales with the
 number of live columns rather than with the number of objects in the world.
-Objects are driven *towards* a terminal vertical speed rather than kicked with
-an impulse, so the ride is smooth and an object already falling fast gets
-braked to the whirlpool's speed instead of accelerated past it.
+
+**Players and entities are moved by completely different means, and this
+matters.** A player is moved by the *client*, which runs its own gravity and
+liquid drag every frame. `add_velocity` on a player is a single nudge into that
+simulation: the drag eats it between server ticks, and `lua_api.md` states it
+does nothing at all during `free_move` — easy to be in inside a creative world.
+So players are not pushed. Their gravity is *inverted* with a physics override
+and the client's own movement code does the lifting; water drag caps the speed
+by itself, exactly as it does when falling. Entities (mobs, boats, dropped
+items) are simulated server-side, where `add_velocity` behaves, so those are
+driven *towards* a terminal speed — which also means an entity already falling
+fast gets braked to the whirlpool's speed rather than accelerated past it.
+
+## Diagnosing a column that does nothing
+
+    /bubblecheck
+
+Run it standing in the column. It walks every stage — source block found,
+column height measured, column present in the live registry, player inside the
+column's bounding box, gravity override applied — and names the one that fails.
+If it reports the gravity override as correct and you still don't move, you're
+in fly mode; press `K`.
+
+`bubble_columns_debug = true` in `minetest.conf` traces the same pipeline to
+`debug.txt` continuously, which is noisier but catches intermittent problems.
 
 The bubbles are the game's own `mcl_particles_bubble.png`, the sprite
 `mcl_player` uses for the underwater breath trail. Luanti's media namespace is
@@ -59,8 +81,11 @@ settings menu.
 | `bubble_columns_max_height` | 24 | tallest column a single block can drive |
 | `bubble_columns_up_speed` | 8.0 | terminal updraft speed, nodes/s |
 | `bubble_columns_down_speed` | 6.0 | terminal whirlpool speed, nodes/s |
-| `bubble_columns_accel` | 30.0 | how sharply you reach that speed, nodes/s² |
+| `bubble_columns_accel` | 30.0 | how sharply an *entity* reaches that speed, nodes/s² |
+| `bubble_columns_up_gravity` | -1.0 | *player* gravity multiplier in an updraft; negative lifts |
+| `bubble_columns_down_gravity` | 3.0 | *player* gravity multiplier in a whirlpool |
 | `bubble_columns_restore_air` | true | updraft refills the player's air |
+| `bubble_columns_debug` | false | trace the pipeline to `debug.txt` |
 
 ## Testing
 
