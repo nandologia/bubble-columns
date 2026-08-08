@@ -1,18 +1,19 @@
--- bubble_columns — Minecraft-style bubble columns for Mineclonia.
+-- bubble_columns -- soul sand updrafts and magma whirlpools for Mineclonia.
 --
--- A soul sand block with water above it turns that water column into an
--- updraft; a magma block turns it into a whirlpool that drags everything
--- down.  Players, mobs, boats and dropped items are all carried.
+-- Soul sand under water makes an updraft; magma makes a whirlpool.  Players,
+-- mobs, boats and dropped items are carried either way.
 --
--- Nothing here registers a node, so the mod can be added to or removed from
--- an existing world freely -- there is no orphaned-node problem to migrate.
+-- Registers no nodes, so the mod can be added to or removed from a world
+-- freely.
 --
--- Columns are found by an ABM on the source blocks, which confines the search
--- to map blocks the engine already treats as active.  Each ABM hit refreshes
--- an entry in `columns` and re-arms the particle spawner; a globalstep then
--- does the per-object physics and lets stale entries expire.  Keeping the
--- registry means the expensive call (get_objects_in_area) scales with the
--- number of live columns rather than with the number of objects in the world.
+-- Structure:
+--   * Players are scanned every server step and drive their own column
+--     lookup.  Everything about player movement happens in scan_players.
+--   * Entities are handled from a registry of live columns, so the costly
+--     get_objects_in_area scales with column count, not object count.
+--   * An ABM on the source blocks keeps unoccupied columns drawing bubbles.
+--
+-- Two engine constraints shape the whole design; see begin_lift.
 
 local modname = core.get_current_modname()
 
@@ -35,58 +36,22 @@ local DOWN_SPEED = setting_number("down_speed", 6)
 -- How hard an entity is pulled towards that speed, m/s^2.  Entities only;
 -- players are moved by the gravity factors below instead.
 local ACCEL = setting_number("accel", 30)
--- Gravity multiplier applied to a player in an updraft.
---
--- KEY ENGINE FACT: physics_override.gravity does NOT lift a player who is in
--- a liquid.  Luanti's client uses its liquid movement model there
--- (movement_liquid_sink / movement_liquid_fluidity), not gravity
--- acceleration.  Measured in game: gravity forced to -1.0 while standing in a
--- 16-deep column still gave v.y = -0.30, i.e. still sinking.
---
--- So this is 0, not negative: it stops gravity fighting the velocity drive
--- between steps and keeps the player from being yanked back down the instant
--- they breach the surface.  The actual lifting is done by topping velocity up
--- every server step, which is what mcl_potions' levitation does and why that
--- effect works underwater.
+-- Neutralises gravity for a player in an updraft so it does not fight the
+-- lift.  It cannot do the lifting itself -- see begin_lift.
 local UP_GRAVITY = setting_number("up_gravity", 0)
 
--- The client's own liquid model, retuned per-player while in an updraft
--- (physics_overrides_v2, Luanti 5.8+).  This is what makes the climb smooth:
--- the client moves the player continuously at its own frame rate, instead of
--- the server re-kicking their velocity 20 times a second, which is what made
--- it hiccup.
---
--- THE PLAYER LIFT IS ENTIRELY CLIENT-SIDE.  The server never touches a
--- player's velocity in an updraft, and that is deliberate.
---
--- `add_velocity` arbitrates against `get_velocity()`, which lags the client by
--- however far behind the last position update is.  Rewriting velocity every
--- step against a stale reading overshoots whenever the reading is low, so the
--- client is pushed past target, and the next step pushes again.  That is both
--- the jitter and the energy pump behind the bounce that grew at the surface --
--- it needs no help from any other override to happen.
---
--- `liquid_sink` is a multiplier on the liquid sink *speed*, so a negative
--- value rises at a constant rate with no acceleration runway to compound, and
--- the client applies it continuously at its own frame rate.  One controller,
--- no stale feedback, smooth by construction.  This is the speed control for
--- players; UP_SPEED applies only to entities.
--- Not `local ... =` only: /bubblespeed rewrites this at runtime so the climb
--- can be dialled in without a restart.
+-- Player climb and sink speeds, as multipliers on the client's own liquid
+-- sink speed: negative rises, positive sinks.  These are the player speed
+-- controls; UP_SPEED and DOWN_SPEED above apply only to entities.
+-- Both are reassigned at runtime by /bubblespeed.
 local LIQUID_SINK = setting_number("liquid_sink", -1.4)
--- Only removes resistance, so it cannot drive anything on its own.  Kept
--- modest: high fluidity also makes the player retain momentum like air, which
--- is what let them carry speed up out of the water.
-local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 1.5)
--- The whirlpool equivalent: a positive multiplier on normal sink speed.  Was
--- originally a server-side velocity drive, which dragged the player to the
--- bottom almost instantly and brought back the same growing bounce the
--- updraft used to have -- unsurprisingly, since it was the same mechanism.
 local DOWN_SINK = setting_number("down_sink", 2.0)
--- Fraction of the climb speed kept over the last SURFACE_TAPER nodes, so the
--- player eases up to the surface and floats instead of being carried clear of
--- it.  Applied as a second lift state rather than a per-step recalculation --
--- playerphysics serialises to player meta on every write.
+-- Removes some of the water resistance that would otherwise damp the climb to
+-- ordinary swim-up speed.  Kept modest: high values also let a player retain
+-- momentum like air and carry speed up out of the water.
+local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 1.5)
+-- Fraction of the climb speed kept over the last SURFACE_TAPER nodes so the
+-- player eases up to the surface and floats rather than being fired clear.
 local SURFACE_SINK_SCALE = setting_number("surface_sink_scale", 0.6)
 
 -- Below 1 is unsupported by the engine and silently misbehaves.
@@ -94,20 +59,13 @@ if LIQUID_FLUIDITY < 1 then
 	LIQUID_FLUIDITY = 1
 end
 
--- How far below the surface the updraft starts easing off, in nodes.  Without
--- it the lift runs at full speed right up to the surface and fires the player
--- clear; they fall back in, get lifted again, and it reads as bouncing.
---
--- Measured from the player's HEAD, not their feet, which sit 1.4 nodes lower.
--- Measuring from the feet made the setting mean something else entirely and
--- started the slowdown far too early.
+-- How far below the surface the updraft starts easing off, in nodes, measured
+-- from the player's HEAD (their feet sit 1.4 nodes lower).  Without it the
+-- lift fires them clear of the water and they fall back in repeatedly.
 local SURFACE_TAPER = setting_number("surface_taper", 1.0)
--- Both directions replenish air, as in Minecraft -- the wiki describes it for
--- bubble columns generally, not just rising ones.  A whirlpool is still
--- dangerous because it pins you against a magma block, which burns.
+-- Columns of either direction replenish the player's air.
 local RESTORE_AIR = setting_bool("restore_air", true)
--- Traces the whole pipeline to debug.txt: column found -> object in area ->
--- velocity driven.  Off by default; noisy by design when on.
+-- Traces column detection and physics to debug.txt.  Noisy by design.
 local DEBUG = setting_bool("debug", false)
 
 local function dbg(fmt, ...)
@@ -116,11 +74,8 @@ local function dbg(fmt, ...)
 	end
 end
 
--- Soul *soil* is deliberately absent by default: in Minecraft it makes no
--- bubble column, only soul sand does.  They are separate nodes from separate
--- mods (mcl_nether:soul_sand vs mcl_blackstone:soul_soil) that merely share
--- the `soul_block` group -- which is exactly why the group is the wrong thing
--- to test against, and why they are so easy to confuse in the inventory.
+-- Matched by node name, not by the `soul_block` group: soul soil shares that
+-- group with soul sand but must not make a column.
 local SOURCES = {
 	["mcl_nether:soul_sand"] = "up",
 	["mcl_nether:magma"] = "down",
@@ -139,9 +94,8 @@ end
 local ABM_INTERVAL = 2
 -- Must exceed ABM_INTERVAL, or a column blinks out between refreshes.
 local COLUMN_TTL = ABM_INTERVAL + 1.5
--- Re-running the object pass every server step buys nothing: we drive towards
--- a target velocity rather than applying impulses, so a coarser tick is just
--- as smooth and far cheaper.
+-- Entities are eased towards a target velocity rather than kicked, so a
+-- coarser tick than the player pass is just as smooth and much cheaper.
 local OBJECT_INTERVAL = 0.1
 -- How often a live column re-arms its particle spawner.
 local PARTICLE_PERIOD = 2.0
@@ -155,10 +109,10 @@ local function is_water(name)
 	return core.get_item_group(name, "water") > 0
 end
 
--- Columns propagate through water *source* blocks only, stopping at flowing
--- water, exactly as they do in Minecraft.  Tested by group rather than by
--- name so river water (mclx_core:river_water_source, which copies the water
--- source definition) counts too.
+-- Columns propagate through water *source* blocks only and stop at flowing
+-- water.  Tested by group rather than by name so river water
+-- (mclx_core:river_water_source, which copies the water source definition)
+-- counts too.
 local function is_column_water(name)
 	return core.get_item_group(name, "water") > 0
 		and core.get_item_group(name, "liquid_source") > 0
@@ -181,10 +135,9 @@ end
 -- A straight fizz along the whole shaft, rising or falling with the column.
 local function spawn_particles(pos, kind, height)
 	local rising = kind == "up"
-	-- Bubbles keep travelling on their own velocity after they spawn, so
-	-- filling the column right to the surface threw them well clear of the
-	-- water.  Stop the spawn volume a node short and keep speed x lifetime
-	-- under that node, so they die at the surface rather than above it.
+	-- Stop a node short of the surface: bubbles keep travelling after they
+	-- spawn, and speed x lifetime must stay under that node or they end up
+	-- visibly above the water.
 	local top = math.max(0.5, height - 1)
 	core.add_particlespawner({
 		-- Enough to read as a column without flooding the client on a
@@ -210,9 +163,8 @@ local function spawn_particles(pos, kind, height)
 	})
 end
 
--- Counters, reported by /bubblecheck.  They are the difference between "the
--- ABM never fired" and "the ABM fired and the action bailed out", which is
--- not something you can otherwise tell from outside.
+-- Counters, reported by /bubblecheck: they distinguish "the ABM never fired"
+-- from "it fired and the action bailed out".
 local stats = {abm_hits = 0, scan_hits = 0, registered = 0}
 
 -- Both discovery paths funnel through here.
@@ -234,8 +186,7 @@ local function register_column(pos, kind, height)
 		columns[hash] = column
 		stats.registered = stats.registered + 1
 	end
-	-- Rate-limited here rather than tied to the ABM, since the player scan
-	-- now discovers the same column many times a second.
+	-- Rate-limited: the player scan rediscovers the same column every step.
 	if now >= column.next_particles then
 		spawn_particles(pos, kind, height)
 		column.next_particles = now + PARTICLE_PERIOD
@@ -260,21 +211,18 @@ local function find_source_below(pos)
 	return nil
 end
 
--- The vertical span a column acts on, as a pair of corner positions.
---
--- The bottom is the *bottom* of the source block, not the top.  A player
--- standing on the soul sand has their position at the block's top face, and
--- floating point puts them a hair either side of it -- with the box starting
--- exactly there, they tested as outside it and nothing happened.  Anything
--- resting on the block should be carried, so the block's own cell is in.
+-- The vertical span a column acts on, as a pair of corner positions.  Starts
+-- at the *bottom* of the source block so anything resting on top of it is
+-- inside the box; an object standing on the block sits exactly on the upper
+-- face, which floating point puts either side of.
 local function column_bounds(column)
 	local pos = column.pos
 	return {x = pos.x - 0.5, y = pos.y - 0.5, z = pos.z - 0.5},
 		{x = pos.x + 0.5, y = pos.y + 0.5 + column.height, z = pos.z + 0.5}
 end
 
--- Secondary: keeps unoccupied columns visible.  Cosmetic only now, so its
--- failure modes no longer break the feature.
+-- Keeps unoccupied columns drawing bubbles.  Cosmetic only: players find
+-- their own columns by scanning, so this failing breaks nothing.
 core.register_abm({
 	label = "bubble_columns: draw unoccupied columns",
 	nodenames = SOURCE_NAMES,
@@ -296,26 +244,30 @@ core.register_abm({
 	end,
 })
 
--- Players and everything else need completely different treatment.
+-- Players and entities are moved by completely different means, for two
+-- engine reasons.  Both are easy to undo by accident, so:
 --
--- A player is moved by the *client*, which runs its own gravity and liquid
--- drag every frame.  `add_velocity` on a player is a single nudge into that
--- simulation -- the drag eats it between server ticks, and lua_api.md notes
--- it does nothing at all during `free_move` (fly), which is easy to be in
--- inside a creative world.  So players are not pushed: their gravity is
--- *inverted* via a physics override, and the client's own movement code
--- lifts them.  Working with the engine instead of against it.
+--  1. NEVER rewrite a player's velocity to move them continuously.
+--     `add_velocity` arbitrates against `get_velocity()`, which lags the
+--     client; a stale-low reading makes the correction overshoot, and the
+--     next step overshoots again.  The result is visible jitter and a bounce
+--     that grows every time the player breaks the surface.
 --
--- Entities (mobs, boats, dropped items) are simulated server-side, where
--- add_velocity does exactly what it says, so those keep the velocity drive.
+--  2. `physics_override.gravity` does NOT lift a player in a liquid.  The
+--     client uses its liquid model there (movement_liquid_sink /
+--     movement_liquid_fluidity), not gravity acceleration.
+--
+-- So a player is moved only by handing the client a different liquid model
+-- and letting it do the work: `liquid_sink` is a multiplier on sink speed, so
+-- negative rises at a constant rate.  One controller, no stale feedback.
+--
+-- Entities are simulated server-side with no client predicting them, so
+-- `add_velocity` behaves normally and they keep the eased velocity drive.
 local LIFT_ID = "bubble_columns:column"
 
--- obj -> {kind = "up"|"down", last_seen = <time>}.
---
--- Timestamped rather than rebuilt from a per-tick set because players are now
--- refreshed every server step while entities are only swept every
--- OBJECT_INTERVAL; a single shared "seen this tick" set would release
--- entities the moment a step ran without an entity pass.
+-- obj -> {kind = "up"|"down", last_seen = <time>}.  Timestamped rather than
+-- rebuilt each tick because the player and entity passes run at different
+-- rates, so a shared "seen this tick" set would release entities early.
 local lifted = {}
 -- How long an object keeps its hold after it stops being refreshed.  Must
 -- comfortably exceed OBJECT_INTERVAL.
@@ -606,9 +558,9 @@ core.register_chatcommand("bubblecheck", {
 				say("stage 1 FAIL: hit %s at %d before finding a source block",
 					n, y - i)
 				if n == "mcl_blackstone:soul_soil" then
-					say("  ^ that is Soul SOIL, not Soul SAND. They are different")
-					say("    blocks and only soul sand makes a column, as in")
-					say("    Minecraft. You want mcl_nether:soul_sand -- or set")
+					say("  ^ that is Soul SOIL, not Soul SAND. They are")
+					say("    different blocks and only soul sand makes a")
+					say("    column. You want mcl_nether:soul_sand -- or set")
 					say("    bubble_columns_soul_soil_too = true to allow both.")
 				end
 				break

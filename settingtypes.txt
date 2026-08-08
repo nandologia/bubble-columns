@@ -50,13 +50,13 @@ bubble_columns_surface_sink_scale (Surface easing) float 0.6 0.0 1.0
 #    model. The lifting is done by the speed setting above.
 bubble_columns_up_gravity (Updraft gravity multiplier) float 0.0 -2.0 1.0
 
-#    Refill the player's air while they are in a bubble column, as in
-#    Minecraft. Applies to whirlpools as well as updrafts.
+#    Refill the player's air while they are in a bubble column. Applies to
+#    whirlpools as well as updrafts.
 bubble_columns_restore_air (Bubble columns refill air) bool true
 
-#    Let Soul Soil make updrafts as well as Soul Sand. Minecraft does not do
-#    this -- only soul sand works there -- but the two blocks look alike and
-#    are easy to mix up, so enable this if you would rather both worked.
+#    Let Soul Soil make updrafts as well as Soul Sand. Off by default: only
+#    soul sand should work. The two blocks look alike and are easy to mix up,
+#    so enable this if you would rather both worked.
 bubble_columns_soul_soil_too (Soul soil makes columns too) bool false
 
 #    Trace column detection and physics to debug.txt. Very noisy; for
@@ -68,5 +68,5 @@ bubble_columns_debug (Debug logging) bool false
 #    Tune it live in game with /bubbletaper rather than by restarting.
 #    Without this the lift runs at full speed right up to the surface and
 #    fires you clear of it; you fall back in, get lifted again, and it reads
-#    as bouncing. Set to 0 for a Minecraft-style launch out of the top.
+#    as bouncing. Set to 0 to be launched clear out of the top instead.
 bubble_columns_surface_taper (Surface taper distance) float 1.0 0.0 12.0
