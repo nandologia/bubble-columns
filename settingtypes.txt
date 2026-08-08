@@ -51,3 +51,9 @@ bubble_columns_soul_soil_too (Soul soil makes columns too) bool false
 #    Trace column detection and physics to debug.txt. Very noisy; for
 #    diagnosing a column that does not seem to do anything.
 bubble_columns_debug (Debug logging) bool false
+
+#    How far below the water surface the updraft starts easing off, in nodes.
+#    Without this the lift runs at full speed right up to the surface and
+#    fires you clear of it; you fall back in, get lifted again, and it reads
+#    as bouncing. Set to 0 for a Minecraft-style launch out of the top.
+bubble_columns_surface_taper (Surface taper distance) float 2.5 0.0 8.0

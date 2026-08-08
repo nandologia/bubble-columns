@@ -57,6 +57,14 @@ Two things that look like they should work and don't:
 * **Raising `up_speed` alone does nothing.** Liquid resistance clamps the climb
   to swim-up speed regardless; `liquid_fluidity` is what unlocks it.
 
+**The lift is capped and tapers at the surface.** The speed correction clamps
+symmetrically — only ever *raising* it left the negative `liquid_sink` free to
+accelerate without a ceiling, and that closes a feedback loop: a deeper plunge
+gives the acceleration a longer runway, so you exit faster, arc higher, fall
+back faster and plunge deeper still. Every bounce grew. The lift also eases off
+over the last `surface_taper` nodes, so you arrive at the surface and float
+instead of being fired clear of it and falling back in.
+
 **The lift needs your head under water, not just your feet.** Breaching the
 surface at the top of a column therefore just stops the lift, and you leave on
 a normal ballistic arc — which is roughly how Minecraft ejects you. Driving on
@@ -121,7 +129,8 @@ settings menu.
 | `bubble_columns_max_height` | 24 | tallest column a single block can drive |
 | `bubble_columns_liquid_sink` | -1.6 | **main updraft speed control**; negative sinks upward |
 | `bubble_columns_liquid_fluidity` | 3.0 | lowers liquid resistance so the climb isn't clamped |
-| `bubble_columns_speed_deadband` | 1.5 | how far below target before the server corrects |
+| `bubble_columns_speed_deadband` | 1.5 | drift either side of target before the server corrects |
+| `bubble_columns_surface_taper` | 2.5 | nodes below the surface where the lift eases off; 0 = launch |
 | `bubble_columns_up_speed` | 8.0 | velocity floor for the updraft, nodes/s |
 | `bubble_columns_down_speed` | 6.0 | terminal whirlpool speed, nodes/s |
 | `bubble_columns_accel` | 30.0 | how sharply an *entity* reaches that speed, nodes/s² |

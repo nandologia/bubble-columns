@@ -67,6 +67,12 @@ local LIQUID_FLUIDITY = setting_number("liquid_fluidity", 3.0)
 -- is a floor, not the drive, and firing it every step is what causes the
 -- sawtooth the player feels as hiccuping.
 local SPEED_DEADBAND = setting_number("speed_deadband", 1.5)
+-- Distance below the water surface over which the updraft eases off, in
+-- nodes.  Without this the lift runs at full speed right up to the surface
+-- and fires the player clear of it; they then fall back in and are lifted
+-- again, which reads as bouncing however well behaved each individual launch
+-- is.  Tapering lets them surface and simply float.
+local SURFACE_TAPER = setting_number("surface_taper", 2.5)
 -- Minecraft's updraft keeps you breathing; its whirlpool does not.
 local RESTORE_AIR = setting_bool("restore_air", true)
 -- Traces the whole pipeline to debug.txt: column found -> object in area ->
@@ -134,7 +140,12 @@ end
 
 local function spawn_particles(pos, kind, height)
 	local rising = kind == "up"
-	local vel = rising and 4 or -4
+	local vel = rising and 1.5 or -1.5
+	-- Bubbles keep travelling on their own velocity after they spawn, so
+	-- filling the column right to the surface threw them well clear of the
+	-- water.  Stop the spawn volume a node short and keep speed x lifetime
+	-- under that node, so they die at the surface rather than above it.
+	local top = math.max(0.5, height - 1)
 	core.add_particlespawner({
 		-- Enough to read as a column without flooding the client on a
 		-- reef full of magma blocks.
@@ -142,13 +153,13 @@ local function spawn_particles(pos, kind, height)
 		-- Overlaps the next re-arm so the column does not visibly pulse.
 		time = PARTICLE_PERIOD + 0.5,
 		minpos = {x = pos.x - 0.45, y = pos.y + 0.5, z = pos.z - 0.45},
-		maxpos = {x = pos.x + 0.45, y = pos.y + 0.5 + height, z = pos.z + 0.45},
+		maxpos = {x = pos.x + 0.45, y = pos.y + 0.5 + top, z = pos.z + 0.45},
 		minvel = {x = -0.2, y = vel, z = -0.2},
 		maxvel = {x = 0.2, y = vel * 1.6, z = 0.2},
 		minacc = {x = -0.4, y = 0, z = -0.4},
 		maxacc = {x = 0.4, y = 0, z = 0.4},
-		minexptime = 0.6,
-		maxexptime = 1.4,
+		minexptime = 0.25,
+		maxexptime = 0.4,
 		minsize = 0.7,
 		maxsize = 2.4,
 		collisiondetection = false,
@@ -349,12 +360,20 @@ end
 -- shape mcl_potions' levitation uses, and why that effect works underwater.
 -- Only ever speeds an object up in the intended direction; something already
 -- moving faster that way is left alone.
+-- Hold `obj` at `target` vertical speed, correcting only once it has drifted
+-- further than `deadband` either side of it.
+--
+-- The clamp has to be symmetric.  Only ever raising the speed left the
+-- negative liquid_sink override free to accelerate the player upward without
+-- any ceiling, and that closes a feedback loop at the surface: a deeper
+-- plunge gives the acceleration a longer runway, so they exit faster, arc
+-- higher, fall back faster, plunge deeper still.  That is what made each
+-- bounce bigger than the last.  Capping the speed opens the loop.
 local function force_speed(obj, target, deadband)
 	local vel = obj:get_velocity()
 	if not vel then return end
 	deadband = deadband or 0
-	if (target > 0 and vel.y < target - deadband)
-		or (target < 0 and vel.y > target + deadband) then
+	if math.abs(vel.y - target) > deadband then
 		obj:add_velocity({x = 0, y = target - vel.y, z = 0})
 	end
 end
@@ -406,6 +425,14 @@ local function scan_players(in_column)
 					if submerged then
 						in_column[player] = true
 						begin_lift(player, rising)
+						-- Ease off approaching the surface so the player
+						-- arrives and floats instead of being launched clear.
+						local surface_y = source_pos.y + 0.5 + height
+						local to_surface = surface_y - pos.y
+						local taper = 1
+						if rising and to_surface < SURFACE_TAPER then
+							taper = math.max(0.15, to_surface / SURFACE_TAPER)
+						end
 						-- Deadbanded on the way up because the liquid
 						-- overrides should already be holding the speed; the
 						-- correction is a floor for when they cannot (a slow
@@ -413,7 +440,11 @@ local function scan_players(in_column)
 						-- physics_overrides_v2).  A whirlpool has no override
 						-- helping it, so it is driven outright.
 						if rising then
-							force_speed(player, UP_SPEED, SPEED_DEADBAND)
+							-- Deadband shrinks with the taper, or the slack
+							-- would swamp the reduced target near the surface
+							-- and let the launch through anyway.
+							force_speed(player, UP_SPEED * taper,
+								SPEED_DEADBAND * taper)
 						else
 							force_speed(player, -DOWN_SPEED)
 						end

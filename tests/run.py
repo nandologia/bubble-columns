@@ -654,6 +654,35 @@ def test_surface_resonance():
     check("column still tracked while player is at the surface",
           g.bubble_columns.columns["0,0,0"] is not None)
 
+    # The clamp must be symmetric. Only ever raising the speed left the
+    # negative liquid_sink override free to accelerate without a ceiling,
+    # which is what compounded the bounce.
+    lua_c = load_mod()
+    gc = lua_c.globals()
+    build_column(lua_c, 0, 0, "mcl_nether:soul_sand", 16)
+    racer = gc.MAKE_OBJECT(0, 3, 0, lua_c.table(player=True, name="jack"))
+    racer._vel = gc.vector.new(0, 25.0, 0)     # as if the client ran away
+    gc.RUN_STEPS(0.05, 0.05)
+    check("a player moving faster than target is clamped back down",
+          close(racer._vel.y, 8), racer._vel.y)
+
+    # Taper: deep in the column full speed, near the surface much less.
+    lua_t = load_mod()
+    gt = lua_t.globals()
+    build_column(lua_t, 0, 0, "mcl_nether:soul_sand", 16)
+    deep = gt.MAKE_OBJECT(0, 3, 0, lua_t.table(player=True, name="kim"))
+    gt.RUN_STEPS(0.05, 0.05)
+    check("full speed deep in the column", close(deep._vel.y, 8), deep._vel.y)
+
+    # Surface is at 0.5 + 16 = 16.5, taper starts 2.5 below it. The head sits
+    # 1.4 above the feet, so it leaves the water at about y=15.1 -- stay under
+    # that or there is no lift to taper.
+    near = gt.MAKE_OBJECT(0, 14.8, 0, lua_t.table(player=True, name="lee"))
+    gt.RUN_STEPS(0.05, 0.05)
+    check("eased off approaching the surface",
+          0 < near._vel.y < 8, near._vel.y)
+    check("still rising, not stalled", near._vel.y > 0, near._vel.y)
+
     # Simulate repeated surface bounces: energy must not accumulate.
     peaks = []
     for _ in range(4):
@@ -727,9 +756,14 @@ def test_particles():
     check("reuses the game's own bubble texture",
           spawner.texture == "mcl_particles_bubble.png", spawner.texture)
     check("updraft bubbles move upward", spawner.minvel.y > 0, spawner.minvel.y)
-    check("spawn volume spans the whole column",
-          close(spawner.minpos.y, 0.5) and close(spawner.maxpos.y, 4.5),
+    # Stops a node short of the surface: bubbles keep travelling after they
+    # spawn, and filling to the top threw them clear of the water.
+    check("spawn volume stops a node below the surface",
+          close(spawner.minpos.y, 0.5) and close(spawner.maxpos.y, 3.5),
           f"{spawner.minpos.y}..{spawner.maxpos.y}")
+    check("bubbles cannot outlive the node they have left to travel",
+          spawner.maxvel.y * spawner.maxexptime < 1.0 + 1e-9,
+          spawner.maxvel.y * spawner.maxexptime)
     check("spawner outlives the ABM interval (no visible pulsing)",
           spawner.time > 2, spawner.time)
 
