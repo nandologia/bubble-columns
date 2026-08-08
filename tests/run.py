@@ -93,6 +93,15 @@ function core.register_on_leaveplayer(f) table.insert(LEAVE_CALLBACKS, f) end
 function core.log(_, msg) table.insert(LOGS, msg) end
 function core.register_chatcommand(name, def) CHATCOMMANDS[name] = def end
 function core.get_player_by_name(n) return PLAYERS_BY_NAME[n] end
+function core.get_connected_players()
+	local players = {}
+	for _, obj in ipairs(OBJECTS) do
+		if obj._player and obj._valid ~= false then
+			table.insert(players, obj)
+		end
+	end
+	return players
+end
 function core.pos_to_string(p)
 	return "(" .. p.x .. "," .. p.y .. "," .. p.z .. ")"
 end
@@ -480,17 +489,27 @@ def test_gravity_lift():
     check("mob leaving the column restores its fall speed",
           g.MOB_FACTOR(mob, "fall_speed/bubble_columns:column") is None)
 
-    # A column expiring under a stationary player must also release them.
+    # Detection must work from the player scan alone, with the ABM never
+    # invoked -- that is the whole point of the rewrite.
     lua2 = load_mod()
     g2 = lua2.globals()
     build_column(lua2, 0, 0, "mcl_nether:soul_sand", 4)
-    g2.RUN_ABM(0, 0, 0)
     stuck = g2.MAKE_OBJECT(0, 2, 0, lua2.table(player=True, name="carol"))
     g2.RUN_STEPS(0.5, 0.05)
-    check("player is lifted while the column lives",
+    check("player scan alone discovers the column (ABM never run)",
+          g2.FACTOR(stuck, "gravity/bubble_columns:column") == -1.0,
+          g2.FACTOR(stuck, "gravity/bubble_columns:column"))
+
+    # While someone stands in it the scan keeps refreshing it, so it must not
+    # time out under them.
+    g2.RUN_STEPS(10.0, 0.1)
+    check("column does not expire while a player stands in it",
           g2.FACTOR(stuck, "gravity/bubble_columns:column") == -1.0)
+
+    # Digging the source block out must release them.
+    g2.WORLD_SET(0, 0, 0, "mcl_core:stone")
     g2.RUN_STEPS(5.0, 0.1)
-    check("an expiring column releases the player it was lifting",
+    check("removing the source block releases the player",
           g2.FACTOR(stuck, "gravity/bubble_columns:column") is None)
 
 

@@ -67,6 +67,8 @@ local COLUMN_TTL = ABM_INTERVAL + 1.5
 -- a target velocity rather than applying impulses, so a coarser tick is just
 -- as smooth and far cheaper.
 local OBJECT_INTERVAL = 0.1
+-- How often a live column re-arms its particle spawner.
+local PARTICLE_PERIOD = 2.0
 
 -- Monotonic seconds since load, accumulated from globalstep dtime.  Used
 -- instead of os.time() so expiry follows server time, not wall clock.
@@ -98,8 +100,8 @@ local function spawn_particles(pos, kind, height)
 		-- Enough to read as a column without flooding the client on a
 		-- reef full of magma blocks.
 		amount = math.min(4 * height, 60),
-		-- Overlaps the next ABM pass so the column does not visibly pulse.
-		time = ABM_INTERVAL + 0.5,
+		-- Overlaps the next re-arm so the column does not visibly pulse.
+		time = PARTICLE_PERIOD + 0.5,
 		minpos = {x = pos.x - 0.45, y = pos.y + 0.5, z = pos.z - 0.45},
 		maxpos = {x = pos.x + 0.45, y = pos.y + 0.5 + height, z = pos.z + 0.45},
 		minvel = {x = -0.2, y = vel, z = -0.2},
@@ -118,8 +120,85 @@ local function spawn_particles(pos, kind, height)
 	})
 end
 
+-- Counters, reported by /bubblecheck.  They are the difference between "the
+-- ABM never fired" and "the ABM fired and the action bailed out", which is
+-- not something you can otherwise tell from outside.
+local stats = {abm_hits = 0, scan_hits = 0, registered = 0}
+
+-- Both discovery paths funnel through here.
+local function register_column(pos, kind, height)
+	local hash = core.hash_node_position(pos)
+	local column = columns[hash]
+	if column then
+		column.kind = kind
+		column.height = height
+		column.expires = now + COLUMN_TTL
+	else
+		column = {
+			pos = vector.new(pos.x, pos.y, pos.z),
+			kind = kind,
+			height = height,
+			expires = now + COLUMN_TTL,
+			next_particles = 0,
+		}
+		columns[hash] = column
+		stats.registered = stats.registered + 1
+	end
+	-- Rate-limited here rather than tied to the ABM, since the player scan
+	-- now discovers the same column many times a second.
+	if now >= column.next_particles then
+		spawn_particles(pos, kind, height)
+		column.next_particles = now + PARTICLE_PERIOD
+	end
+	return column
+end
+
+-- Walk down from `pos` through unbroken water looking for a source block.
+-- Returns the source position and its kind, or nil.
+local function find_source_below(pos)
+	local y = math.floor(pos.y + 0.5)
+	for i = 0, MAX_HEIGHT do
+		local p = {x = pos.x, y = y - i, z = pos.z}
+		local name = core.get_node(p).name
+		local kind = SOURCES[name]
+		if kind then
+			return vector.round(p), kind
+		elseif name == "ignore" or not is_water(name) then
+			return nil
+		end
+	end
+	return nil
+end
+
+-- Primary detection: driven by the players themselves.
+--
+-- This started out as an ABM alone, which registered nothing in game -- ABMs
+-- only run in active mapblocks and their scheduling is not observable from
+-- Lua, so a column that never appeared was undiagnosable.  Scanning down from
+-- each player is deterministic, costs one get_node when they are not in
+-- water, and is tied directly to the thing that has to be affected.  The ABM
+-- is kept below purely so columns are still drawn when nobody is inside one.
+local function scan_players()
+	for _, player in ipairs(core.get_connected_players()) do
+		local pos = player:get_pos()
+		if is_water(core.get_node(pos).name)
+			or is_water(core.get_node({x = pos.x, y = pos.y + 1.4, z = pos.z}).name) then
+			local source_pos, kind = find_source_below(pos)
+			if source_pos then
+				local height = measure_column(source_pos)
+				if height > 0 then
+					stats.scan_hits = stats.scan_hits + 1
+					register_column(source_pos, kind, height)
+				end
+			end
+		end
+	end
+end
+
+-- Secondary: keeps unoccupied columns visible.  Cosmetic only now, so its
+-- failure modes no longer break the feature.
 core.register_abm({
-	label = "bubble_columns: find and draw columns",
+	label = "bubble_columns: draw unoccupied columns",
 	nodenames = {"mcl_nether:soul_sand", "mcl_nether:magma"},
 	-- Cheap rejection of every soul sand in the Nether, where there is no
 	-- water to make a column out of.
@@ -130,18 +209,12 @@ core.register_abm({
 	action = function(pos, node)
 		local kind = SOURCES[node.name]
 		if not kind then return end
+		stats.abm_hits = stats.abm_hits + 1
 		local height = measure_column(pos)
 		dbg("abm hit %s at %s -> kind=%s height=%d", node.name,
 			core.pos_to_string(pos), kind, height)
 		if height == 0 then return end
-
-		columns[core.hash_node_position(pos)] = {
-			pos = vector.new(pos.x, pos.y, pos.z),
-			kind = kind,
-			height = height,
-			expires = now + COLUMN_TTL,
-		}
-		spawn_particles(pos, kind, height)
+		register_column(pos, kind, height)
 	end,
 })
 
@@ -273,6 +346,10 @@ core.register_globalstep(function(dtime)
 		present[obj] = nil
 	end
 
+	-- Discover before applying, so a player who just swam in is caught on
+	-- this same tick rather than the next one.
+	scan_players()
+
 	for hash, column in pairs(columns) do
 		if column.expires < now then
 			columns[hash] = nil
@@ -351,11 +428,11 @@ core.register_chatcommand("bubblecheck", {
 		say("        physics_override.gravity = %.2f", override.gravity or 1)
 		local vel = player:get_velocity()
 		say("        your v.y = %.2f", vel and vel.y or 0)
-		say("live columns tracked: %d", (function()
-			local c = 0
-			for _ in pairs(columns) do c = c + 1 end
-			return c
-		end)())
+		local live = 0
+		for _ in pairs(columns) do live = live + 1 end
+		say("live columns tracked: %d", live)
+		say("counters: player-scan hits=%d, abm hits=%d, columns registered=%d",
+			stats.scan_hits, stats.abm_hits, stats.registered)
 		say("NOTE: if gravity is right but you do not move, you are flying;")
 		say("      press K to leave fly mode and try again.")
 
