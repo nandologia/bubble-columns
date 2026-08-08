@@ -106,6 +106,9 @@ fast is braked to the whirlpool's speed rather than accelerated past it.
     /bubblespeed 2.5      -- positive sets the whirlpool
     /bubbletaper          -- show how it eases off at the surface
     /bubbletaper 0.5 0.7  -- ease later (0.5 nodes) and less (keep 70%)
+    /bubblespiral         -- show the whirlpool vortex shape
+    /bubblespiral off     -- plain descending bubbles instead
+    /bubblespiral 0.9 1.5 -- set spin and inward pull
 
 Climb speed and surface behaviour can only really be judged by riding a
 column, so both are adjustable in game without a restart. The taper distance is

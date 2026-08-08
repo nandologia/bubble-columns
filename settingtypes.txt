@@ -75,20 +75,26 @@ bubble_columns_surface_taper (Surface taper distance) float 1.0 0.0 12.0
 
 #    Number of spiral arms the descending bubbles are drawn in. More is a
 #    denser, smoother swirl at the cost of one particle spawner each.
-bubble_columns_spiral_arms (Spiral arms) int 5 1 12
+bubble_columns_spiral_arms (Spiral arms) int 8 1 12
 
 #    How far the arms sit from the column axis, in nodes. Beyond about 0.45
 #    they leave the block.
-bubble_columns_spiral_radius (Spiral radius) float 0.36 0.05 0.45
+bubble_columns_spiral_radius (Spiral radius) float 0.30 0.05 0.45
 
 #    How fast bubbles travel around the axis, in nodes per second.
-bubble_columns_spiral_spin (Spiral spin speed) float 2.0 0.0 8.0
+bubble_columns_spiral_spin (Spiral spin speed) float 0.7 0.0 4.0
 
-#    Inward pull that bends each bubble's path into an orbit instead of
-#    letting it fly off on a straight tangent. Too low and the vortex looks
-#    like a starburst; too high and it collapses to the centre.
-bubble_columns_spiral_pull (Spiral inward pull) float 9.0 0.0 40.0
+#    Inward pull that bends each bubble's path back towards the axis.
+#    KEEP THIS SMALL. A particle's acceleration is a fixed vector set at birth
+#    and does not track the axis, so displacement is 0.5 * pull * lifetime^2
+#    over its whole life -- a pull of 9 slings every bubble 3.6 nodes clear of
+#    the column, in every direction at once.
+bubble_columns_spiral_pull (Spiral inward pull) float 1.2 0.0 8.0
 
 #    How fast the whole ring of arms rotates between refreshes, in radians per
 #    second, so the vortex turns instead of standing still.
-bubble_columns_spiral_turn (Spiral rotation) float 1.1 0.0 6.0
+bubble_columns_spiral_turn (Spiral rotation) float 2.0 0.0 6.0
+
+#    Draw the whirlpool as a vortex at all. Turn this off for a plain
+#    descending column of bubbles.
+bubble_columns_spiral (Whirlpool vortex) bool true
