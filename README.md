@@ -121,6 +121,6 @@ commands.
 
 ## License
 
-Code: GPLv3, see
+Code: **GPL-3.0-only**, see
 [LICENSE.txt](https://github.com/nandologia/bubble-columns/blob/master/LICENSE.txt).
 The mod ships no media of its own; the bubble texture belongs to the game.
