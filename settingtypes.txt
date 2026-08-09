@@ -1,72 +1,32 @@
 [Bubble Columns]
 
-#    Highest water column a single soul sand or magma block can drive, in nodes.
-bubble_columns_max_height (Maximum column height) int 24 1 128
-
-#    Terminal upward speed for MOBS, BOATS AND ITEMS in a soul sand column,
-#    in nodes per second. Players are controlled by liquid_sink below.
-bubble_columns_up_speed (Updraft speed, entities) float 8.0 0.0 40.0
-
-#    Terminal downward speed for MOBS, BOATS AND ITEMS in a magma whirlpool,
-#    in nodes per second. Players are controlled by down_sink below.
-bubble_columns_down_speed (Whirlpool speed, entities) float 6.0 0.0 40.0
-
-#    THE SINK SPEED CONTROL for players in a magma whirlpool: a multiplier on
-#    normal liquid sinking, so higher sinks faster. Client-side, for the same
-#    reason as the updraft -- driving this from the server dragged the player
-#    to the bottom instantly and made them bounce. Tune live with /bubblespeed
-#    using a POSITIVE number.
-bubble_columns_down_sink (Whirlpool sink speed) float 2.0 1.0 6.0
-
-#    How sharply mobs, boats and dropped items are pulled to that speed, in
-#    nodes per second squared. Does not affect players, who are moved by the
-#    gravity multipliers below instead.
-bubble_columns_accel (Entity acceleration) float 30.0 1.0 200.0
-
-#    THE CLIMB SPEED CONTROL for players. Multiplier on liquid sink speed,
-#    so negative rises. More negative is faster. Tune it live in game with
-#    /bubblespeed rather than by restarting.
-#    The client applies this continuously at its own frame rate, which is why
-#    the climb is smooth. The server never touches a rising player's velocity:
-#    doing so arbitrates against a reading that lags the client, which caused
-#    both jitter and a bounce that grew at the surface.
+#    How fast an updraft carries you up. More negative is faster; it is a
+#    multiplier on how fast you would otherwise sink.
+#    Easier to judge by riding one than by guessing: /bubblespeed changes it
+#    without a restart.
 bubble_columns_liquid_sink (Updraft climb speed) float -1.4 -6.0 0.0
 
-#    Multiplier on liquid movement resistance while in an updraft; higher
-#    means less resistance. Keep this modest: high values also let you retain
-#    momentum like air, which carries you up out of the water. Values below 1
-#    are unsupported by the engine and are clamped to 1.
-bubble_columns_liquid_fluidity (Updraft fluidity) float 1.5 1.0 8.0
+#    How fast a whirlpool drags you down. Higher is faster.
+bubble_columns_down_sink (Whirlpool sink speed) float 2.0 1.0 6.0
 
-#    Fraction of the climb speed still applied over the last surface_taper
-#    nodes, so you ease up to the surface and float instead of being carried
-#    clear of it and falling back in.
-bubble_columns_surface_sink_scale (Surface easing) float 0.6 0.0 1.0
+#    How long a boat caught in a whirlpool rocks before it goes under, in
+#    seconds. The rocking is the warning: paddle clear in time and the boat is
+#    fine. Lower is crueller.
+bubble_columns_boat_rock_time (Boat rocking time) float 3.0 0.0 30.0
 
-#    Gravity multiplier for a player in an updraft. 0 neutralises gravity so
-#    it cannot claw back what the lift gains between steps. Do NOT set this
-#    negative expecting it to lift: gravity overrides have almost no effect on
-#    a player inside a liquid, where the client uses its own liquid movement
-#    model. The lifting is done by the speed setting above.
-bubble_columns_up_gravity (Updraft gravity multiplier) float 0.0 -2.0 1.0
+#    Refill your air while you are in a column, so you cannot drown in one.
+#    Turning this off makes whirlpools far more dangerous.
+bubble_columns_restore_air (Columns refill your air) bool true
 
-#    Refill the player's air while they are in a bubble column. Applies to
-#    whirlpools as well as updrafts.
-bubble_columns_restore_air (Bubble columns refill air) bool true
+#    Froth on the water above a column, so you can spot one from a boat or the
+#    shore. Purely decorative.
+bubble_columns_surface_bubbles (Bubbling at the surface) bool true
 
 #    Let Soul Soil make updrafts as well as Soul Sand. Off by default: only
-#    soul sand should work. The two blocks look alike and are easy to mix up,
-#    so enable this if you would rather both worked.
+#    soul sand should work. The two blocks look alike and sit near each other
+#    in the inventory, so enable this if you would rather both worked.
 bubble_columns_soul_soil_too (Soul soil makes columns too) bool false
 
-#    Trace column detection and physics to debug.txt. Very noisy; for
-#    diagnosing a column that does not seem to do anything.
+#    Log column detection and physics to debug.txt. Very noisy; for working
+#    out why a column does not seem to do anything.
 bubble_columns_debug (Debug logging) bool false
-
-#    How far below the water surface the updraft starts easing off, in nodes,
-#    measured from your HEAD (not your feet, which are 1.4 nodes lower).
-#    Tune it live in game with /bubbletaper rather than by restarting.
-#    Without this the lift runs at full speed right up to the surface and
-#    fires you clear of it; you fall back in, get lifted again, and it reads
-#    as bouncing. Set to 0 to be launched clear out of the top instead.
-bubble_columns_surface_taper (Surface taper distance) float 1.0 0.0 12.0

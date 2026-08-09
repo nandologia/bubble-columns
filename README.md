@@ -1,6 +1,6 @@
 # Bubble Columns
 
-Underwater currents for **Mineclonia**, made from two blocks you already have.
+Underwater currents for **Mineclonia** and **Voxelibre**, made from two blocks you already have.
 
 Put **soul sand** on the floor under water and the whole column of water above
 it fills with rising bubbles. Swim into it and you are carried straight to the
@@ -8,6 +8,11 @@ surface. Put **magma** there instead and you get a whirlpool: the bubbles pour
 downward and everything in the column is dragged to the bottom.
 
 Players, mobs, boats and dropped items are all carried.
+
+A **boat** caught in a whirlpool gets its own treatment: it rocks harder and
+harder for three seconds, the way a boat does when it is about to break, and
+then goes under and stays on the bottom. Paddle clear while it is rocking and
+you keep the boat.
 
 ## Making one
 
@@ -30,6 +35,12 @@ Two things to know:
   each other in the inventory, so if a column does nothing, check which one
   you placed. (There is a setting to allow both, if you would rather.)
 
+Either kind breaks the water surface above it with a patch of froth, so you
+can spot one from a boat or the shore rather than having to swim down and look.
+An updraft boils through the surface; a whirlpool dimples it and draws back
+under. A column that stops under an overhang has no surface to break, and draws
+nothing.
+
 Being in a column of either kind keeps your air topped up, so you will not
 drown while you are in one.
 
@@ -47,25 +58,19 @@ menu under **Bubble Columns**, or can go in `minetest.conf`.
 
 | setting | default | what it does |
 |---|---|---|
-| `bubble_columns_liquid_sink` | -1.4 | how fast you rise; more negative is faster |
-| `bubble_columns_down_sink` | 2.0 | how fast a whirlpool pulls you down |
-| `bubble_columns_surface_taper` | 1.0 | how far below the surface the lift eases off, so you float rather than being thrown clear; 0 launches you out |
-| `bubble_columns_surface_sink_scale` | 0.6 | how much lift is kept while easing off |
-| `bubble_columns_max_height` | 24 | tallest column one block can drive |
-| `bubble_columns_restore_air` | true | columns refill your air |
+| `bubble_columns_liquid_sink` | -1.4 | how fast an updraft carries you up; more negative is faster |
+| `bubble_columns_down_sink` | 2.0 | how fast a whirlpool drags you down |
+| `bubble_columns_boat_rock_time` | 3.0 | seconds a boat rocks before a whirlpool takes it; lower is crueller |
+| `bubble_columns_restore_air` | true | columns refill your air, so you cannot drown in one |
+| `bubble_columns_surface_bubbles` | true | froth on the water above a column |
 | `bubble_columns_soul_soil_too` | false | let soul soil make columns as well |
-| `bubble_columns_up_speed` | 8.0 | rise speed for mobs, boats and items |
-| `bubble_columns_down_speed` | 6.0 | sink speed for mobs, boats and items |
-| `bubble_columns_accel` | 30.0 | how sharply mobs and items reach that speed |
-| `bubble_columns_liquid_fluidity` | 1.5 | how freely you move inside a column |
-| `bubble_columns_up_gravity` | 0.0 | gravity while in an updraft |
 | `bubble_columns_debug` | false | log column detection to `debug.txt` |
 
 ### Tuning in game
 
-Rise and sink speed are far easier to judge by riding a column than by
-guessing, so they can be changed without restarting. Both need the `server`
-privilege.
+How fast a column feels is much easier to judge by riding one than by
+guessing, so the speeds can be changed without restarting. These need the
+`server` privilege.
 
     /bubblespeed          show current rise and sink speeds
     /bubblespeed -2.2     negative sets the rise speed
@@ -74,7 +79,15 @@ privilege.
     /bubbletaper          show how the lift eases off near the surface
     /bubbletaper 0.5 0.7  ease later (0.5 nodes) and less (keep 70%)
 
-Each prints the `minetest.conf` line for whatever you settle on.
+    /bubbleboat           show how a whirlpool treats a boat
+    /bubbleboat 2 4       rock for 2 seconds, then sink at 4 nodes/second
+    /bubbleboat 3 3 2.5   the same, rocking 2.5 times a second
+
+Each prints the `minetest.conf` line for whatever you settle on. A few of
+those lines are for values that are not in the settings menu — how sharply
+mobs and items are pulled along, how the climb eases off at the surface, how
+fast a boat goes under. They are tuned already and most servers will never
+want them, but they can go in `minetest.conf` all the same.
 
 ### If a column does nothing
 
@@ -86,8 +99,12 @@ you — and says which one is failing.
 
 ## Compatibility
 
-Built for Mineclonia. VoxeLibre uses the same block names, so it will most
-likely work there too, though that is untested.
+Works in **Mineclonia** and **VoxeLibre**. Both have soul sand and magma under
+the same names, and the mod adds no blocks of its own, so it can go into an
+existing world or come back out of one freely.
+
+Anywhere without those blocks it refuses to enable
+rather than starting up and doing nothing.
 
 Needs Luanti 5.10 or newer on the server, and players need a 5.8 or newer
 client: the movement is applied through the client, and older ones will simply
@@ -98,10 +115,12 @@ not be carried.
     python3 tests/run.py
 
 Runs the mod against a stubbed engine via the `lupa` Python module, so no
-Luanti install is needed. 124 checks covering column detection, the physics
-applied to players and entities, air, surface behaviour and the chat commands.
+Luanti install is needed. 188 checks covering column detection, the physics
+applied to players, entities and boats, air, surface behaviour and the chat
+commands.
 
 ## License
 
-Code: GPLv3, see `LICENSE.txt`. The mod ships no media of its own; the bubble
-texture belongs to Mineclonia.
+Code: GPLv3, see
+[LICENSE.txt](https://github.com/nandologia/bubble-columns/blob/master/LICENSE.txt).
+The mod ships no media of its own; the bubble texture belongs to the game.

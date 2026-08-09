@@ -32,6 +32,7 @@ LOGS = {}
 CHATCOMMANDS = {}
 PLAYERS_BY_NAME = {}
 PHYSICS_CALLS = 0
+MODS_LOADED = {}
 
 -- vector ------------------------------------------------------------------
 vector = {}
@@ -48,9 +49,9 @@ function WORLD_SET(x, y, z, name) WORLD[x .. "," .. y .. "," .. z] = name end
 function WORLD_CLEAR() WORLD = {} end
 
 -- Only the groups the mod actually consults.
-local NODE_GROUPS = {
-	-- liquid_source is what separates a source block from flowing water, and
-	-- columns only propagate through sources -- so the stub must carry it.
+-- Mineclonia's shape. VoxeLibre's is different in one way that mattered a
+-- great deal; see USE_VOXELIBRE_WATER below.
+NODE_GROUPS = {
 	["mcl_core:water_source"]  = {water = 3, liquid = 3, liquid_source = 1},
 	["mcl_core:water_flowing"] = {water = 3, liquid = 3, liquid_flowing = 1},
 	-- River water copies the water source definition, so it counts too.
@@ -61,6 +62,25 @@ local NODE_GROUPS = {
 	["mcl_blackstone:soul_soil"] = {soul_block = 1},
 	["mcl_nether:magma"]       = {fire = 1},
 }
+
+-- Source vs flowing is a node-definition field, not a group. It is what the
+-- mod reads, because the liquid_source group exists in Mineclonia and not in
+-- VoxeLibre.
+local NODE_LIQUIDTYPE = {
+	["mcl_core:water_source"]  = "source",
+	["mcl_core:water_flowing"] = "flowing",
+	["mclx_core:river_water_source"] = "source",
+}
+
+-- VoxeLibre's water source carries no liquid_source group at all. Testing for
+-- that group is exactly what stopped the mod working there, so a test has to
+-- be able to build a world shaped its way.
+function USE_VOXELIBRE_WATER()
+	NODE_GROUPS["mcl_core:water_source"] =
+		{water = 3, liquid = 3, water_palette = 1}
+	NODE_GROUPS["mcl_core:water_flowing"] = {water = 3, liquid = 3}
+	NODE_GROUPS["mclx_core:river_water_source"] = {water = 3, liquid = 3}
+end
 
 -- core --------------------------------------------------------------------
 core = {}
@@ -88,12 +108,20 @@ end
 function core.hash_node_position(p)
 	return key(p)
 end
+
+-- The mod only registers columns on source blocks that actually exist, so the
+-- stub has to have definitions for every node it names, not just the liquids.
+core.registered_nodes = {}
+for name in pairs(NODE_GROUPS) do
+	core.registered_nodes[name] = {liquidtype = NODE_LIQUIDTYPE[name]}
+end
 function core.add_particlespawner(def)
 	table.insert(PARTICLES, def)
 	return #PARTICLES
 end
 function core.register_abm(def) table.insert(ABMS, def) end
 function core.register_globalstep(f) table.insert(GLOBALSTEPS, f) end
+function core.register_on_mods_loaded(f) table.insert(MODS_LOADED, f) end
 function core.register_on_joinplayer(f) table.insert(JOIN_CALLBACKS, f) end
 function core.register_on_leaveplayer(f) table.insert(LEAVE_CALLBACKS, f) end
 function core.log(_, msg) table.insert(LOGS, msg) end
@@ -149,12 +177,22 @@ function object_mt:get_velocity() return self._vel end
 function object_mt:add_velocity(v)
 	self._vel = vector.new(self._vel.x + v.x, self._vel.y + v.y, self._vel.z + v.z)
 end
-function object_mt:get_properties() return {breath_max = self._breath_max or 10} end
+function object_mt:get_properties()
+	return {
+		breath_max = self._breath_max or 10,
+		collisionbox = self._collisionbox,
+	}
+end
 function object_mt:get_breath() return self._breath end
 function object_mt:set_breath(b) self._breath = b end
 function object_mt:get_player_name() return self._name or "stub" end
 function object_mt:get_luaentity() return self._luaentity end
 function object_mt:get_pos() return self._pos end
+function object_mt:set_pos(p) self._pos = vector.new(p.x, p.y, p.z) end
+function object_mt:set_velocity(v) self._vel = vector.new(v.x, v.y, v.z) end
+function object_mt:set_rotation(r) self._rot = vector.new(r.x, r.y, r.z) end
+function object_mt:get_rotation() return self._rot or vector.new(0, 0, 0) end
+function object_mt:get_yaw() return self:get_rotation().y end
 function object_mt:get_physics_override()
 	-- Mirrors playerphysics: each attribute is the product of its factors.
 	local function product(attribute)
@@ -215,6 +253,57 @@ end
 function OBJECTS_CLEAR() OBJECTS = {} end
 function PARTICLES_CLEAR() PARTICLES = {} end
 
+-- boats -------------------------------------------------------------------
+-- A stand-in for mcl_boats, faithful in the two respects the mod has to work
+-- around: it rewrites the boat's velocity every step, and while the boat is
+-- floating it snaps the position back to the top of its water node -- which
+-- is what silently ate the whirlpool's push before.
+core.registered_entities = {}
+core.luaentities = {}
+BOATS_LIVE = {}
+local BOAT_Y_OFFSET = 0.35
+
+function REGISTER_STUB_BOATS()
+	for _, name in ipairs({"mcl_boats:boat", "mcl_boats:chest_boat"}) do
+		core.registered_entities[name] = {
+			name = name,
+			on_step = function(self, dtime)
+				local obj = self.object
+				local pos = obj:get_pos()
+				local base = {x = pos.x, y = pos.y - BOAT_Y_OFFSET, z = pos.z}
+				local above = {x = pos.x, y = base.y + 1, z = pos.z}
+				if core.get_item_group(core.get_node(base).name, "water") > 0
+					and core.get_item_group(core.get_node(above).name, "water") == 0 then
+					-- Floating: back to the top of the water node it sits on.
+					obj:set_pos(vector.new(pos.x,
+						math.floor(pos.y) + BOAT_Y_OFFSET, pos.z))
+					obj:set_velocity(vector.new(0, 0, 0))
+				end
+				-- Level, as an undamaged boat always is.
+				obj:set_rotation(vector.new(0, obj:get_yaw(), 0))
+			end,
+		}
+	end
+end
+
+function MAKE_BOAT(x, y, z, name, hull)
+	local obj = MAKE_OBJECT(x, y, z)
+	-- Mineclonia's boat box starts at 0, VoxeLibre's at -0.15.
+	obj._collisionbox = {-0.5, hull or 0, -0.5, 0.5, 0.55, 0.5}
+	local def = core.registered_entities[name or "mcl_boats:boat"]
+	-- The definition IS the metatable of every live boat, which is exactly
+	-- what lets the mod's wrap of on_step reach instances made before it.
+	local entity = setmetatable({object = obj}, {__index = def})
+	obj._luaentity = entity
+	table.insert(BOATS_LIVE, entity)
+	table.insert(core.luaentities, entity)
+	return obj, entity
+end
+
+function RUN_MODS_LOADED()
+	for _, f in ipairs(MODS_LOADED) do f() end
+end
+
 -- driving the registered callbacks ---------------------------------------
 function RUN_ABM(x, y, z)
 	local pos = vector.new(x, y, z)
@@ -228,11 +317,36 @@ function RUN_ABM(x, y, z)
 	end
 end
 
+-- Keeps firing the ABM at a position for as long as the test runs, the way
+-- the real one does. Without it a column with no player in it expires after
+-- COLUMN_TTL, which quietly ends any test that runs longer than that.
+ABM_AUTO = {}
+ABM_AUTO_TIMER = 0
+function RUN_ABM_EVERY(x, y, z)
+	table.insert(ABM_AUTO, {x = x, y = y, z = z})
+	RUN_ABM(x, y, z)
+end
+
 function RUN_STEPS(total, dtime)
 	local left = total
 	while left > 1e-9 do
 		local step = math.min(dtime, left)
+		ABM_AUTO_TIMER = ABM_AUTO_TIMER + step
+		if ABM_AUTO_TIMER >= 2 then
+			ABM_AUTO_TIMER = 0
+			for _, p in ipairs(ABM_AUTO) do RUN_ABM(p.x, p.y, p.z) end
+		end
 		for _, f in ipairs(GLOBALSTEPS) do f(step) end
+		for _, entity in ipairs(BOATS_LIVE) do
+			-- The engine integrates velocity and only then calls on_step,
+			-- so anything set at the end of one step lands on the next.
+			local obj = entity.object
+			local vel = obj:get_velocity()
+			obj:set_pos(vector.new(obj._pos.x + vel.x * step,
+				obj._pos.y + vel.y * step,
+				obj._pos.z + vel.z * step))
+			entity:on_step(step)
+		end
 		left = left - step
 	end
 end
@@ -374,6 +488,112 @@ def test_source_water_only():
     check("player in flowing water above the break is not lifted",
           g.FACTOR(swimmer, "liquid_sink/bubble_columns:column") is None,
           g.FACTOR(swimmer, "liquid_sink/bubble_columns:column"))
+
+
+def test_voxelibre_water():
+    """The mod did nothing at all in VoxeLibre. Its water source carries no
+    liquid_source group -- Mineclonia's does -- and that group was what told
+    still water from flowing, so every node failed the test and no column was
+    ever found. Source has to be read from the node definition instead."""
+    print("VoxeLibre water (no liquid_source group)")
+    lua = load_mod()
+    g = lua.globals()
+    g.USE_VOXELIBRE_WATER()
+
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 4)
+    g.RUN_ABM(0, 0, 0)
+    entry = g.bubble_columns.columns["0,0,0"]
+    check("a column forms over water with no liquid_source group",
+          entry is not None)
+    check("and reaches the full depth", entry and entry.height == 4,
+          entry and entry.height)
+
+    # The distinction it was drawing still has to hold.
+    build_column(lua, 6, 0, "mcl_nether:soul_sand", 6)
+    g.WORLD_SET(6, 4, 0, "mcl_core:water_flowing")
+    g.RUN_ABM(6, 0, 0)
+    entry = g.bubble_columns.columns["6,0,0"]
+    check("flowing water still stops the column", entry and entry.height == 3,
+          entry and entry.height)
+
+    # River water is a copy of the water source definition in both games.
+    g.WORLD_SET(12, 0, 0, "mcl_nether:soul_sand")
+    for i in range(1, 5):
+        g.WORLD_SET(12, i, 0, "mclx_core:river_water_source")
+    g.RUN_ABM(12, 0, 0)
+    entry = g.bubble_columns.columns["12,0,0"]
+    check("river water still counts", entry and entry.height == 4,
+          entry and entry.height)
+
+    # And a player in one is actually lifted.
+    player = g.MAKE_OBJECT(0, 2, 0, lua.table(player=True, name="vera"))
+    g.RUN_STEPS(0.2, 0.05)
+    check("a player in a VoxeLibre column is lifted",
+          g.FACTOR(player, "liquid_sink/bubble_columns:column") == -1.4,
+          g.FACTOR(player, "liquid_sink/bubble_columns:column"))
+
+
+def test_voxelibre_boat():
+    """VoxeLibre's boat sits 0.15 lower in its own collision box, so the hull
+    floor is not the boat's origin the way it is in Mineclonia."""
+    print("VoxeLibre boats")
+    lua = load_mod()
+    g = lua.globals()
+    g.USE_VOXELIBRE_WATER()
+    g.REGISTER_STUB_BOATS()
+    g.RUN_MODS_LOADED()
+    build_column(lua, 0, 0, "mcl_nether:magma", 4)
+    g.RUN_ABM_EVERY(0, 0, 0)
+    obj, _ = g.MAKE_BOAT(0, 4.35, 0, "mcl_boats:boat", -0.15)
+
+    g.RUN_STEPS(2.0, 0.05)
+    check("boat rocks in VoxeLibre too",
+          abs(obj._rot.x) > 0.05 or abs(obj._rot.z) > 0.05,
+          (obj._rot.x, obj._rot.z))
+    check("and has not sunk yet", close(obj._pos.y, 4.35, 0.01), obj._pos.y)
+
+    g.RUN_STEPS(8.0, 0.05)
+    # Hull floor is origin - 0.15, and the magma block's top face is y=0.5.
+    check("boat rests on the magma block, not through it",
+          0.65 <= obj._pos.y < 1.15, obj._pos.y)
+
+
+def test_missing_source_block_is_loud():
+    """The mod names its blocks, so a game that renames one breaks every stage
+    at once and no stage says why -- which is exactly how it became a silent
+    no-op under VoxeLibre. That has to be loud, at startup and in game."""
+    print("a renamed source block")
+    lua = lupa.LuaRuntime(unpack_returned_tuples=True)
+    run = lua.eval("function(src, ...) return load(src)(...) end")
+    run(STUBS, lua.eval("{}"))
+    # A game that has soul sand but has renamed magma.
+    run('core.registered_nodes["mcl_nether:magma"] = nil')
+    with open(os.path.join(MODPATH, "init.lua")) as fh:
+        run(fh.read())
+    g = lua.globals()
+
+    logs = [str(m) for m in g.LOGS.values()]
+    check("it says so at startup",
+          any("mcl_nether:magma" in m for m in logs), logs[:3])
+    check("and names the game it expects",
+          any("Mineclonia" in m and "VoxeLibre" in m for m in logs), logs[:3])
+
+    # A log line is no use to someone in game; /bubblecheck has to lead with it
+    # rather than walking stages that all fail for the same hidden reason.
+    g.MAKE_OBJECT(0, 2, 0, lua.table(player=True, name="rae"))
+    ok, text = g.CHATCOMMANDS["bubblecheck"].func("rae")
+    check("/bubblecheck leads with it", ok is True and "STOP:" in text, text)
+    check("and does not walk the stages underneath it",
+          "stage 1" not in text, text)
+    check("and says the fix is not in the player's hands",
+          "mod needs updating" in text, text)
+
+    # A game with everything must say none of this.
+    ok = load_mod()
+    check("and none of it is said when the blocks are all present",
+          not any("STOP" in str(m) or "does not have" in str(m)
+                  for m in ok.globals().LOGS.values()),
+          list(ok.globals().LOGS.values())[:3])
 
 
 def test_max_height():
@@ -907,6 +1127,187 @@ def test_bubbletaper_command():
           "100%" in text, text)
 
 
+def boat_world(settings=None):
+    """A magma whirlpool with an empty boat floating on top of it.
+
+    Magma at y=0 and water at y=1..4, so the surface is 4.5 and a boat floats
+    with its origin at 4.35.
+    """
+    lua = load_mod(settings)
+    g = lua.globals()
+    g.REGISTER_STUB_BOATS()
+    g.RUN_MODS_LOADED()
+    build_column(lua, 0, 0, "mcl_nether:magma", 4)
+    g.RUN_ABM_EVERY(0, 0, 0)
+    obj, boat = g.MAKE_BOAT(0, 4.35, 0)
+    return lua, g, obj, boat
+
+
+def test_boat_rocks_then_sinks():
+    """A boat has to be handled apart from every other entity: mcl_boats
+    rewrites its velocity every step and snaps it back to the top of its water
+    node while it floats, so the ordinary drive is thrown away and the boat
+    used to take far too long to go under."""
+    print("boats: rock, then sink")
+    lua, g, obj, boat = boat_world()
+
+    # The warning window: still afloat, but visibly rocking.
+    g.RUN_STEPS(1.0, 0.05)
+    check("boat is still at the surface a second in",
+          close(obj._pos.y, 4.35, 0.01), obj._pos.y)
+    check("boat is rocking, not sitting level",
+          abs(obj._rot.x) > 0.05 or abs(obj._rot.z) > 0.05,
+          (obj._rot.x, obj._rot.z))
+
+    # Both axes must move: mcl_boats' damage tilt drives pitch and roll
+    # together, which is the look this is copying.
+    pitches, rolls = [], []
+    for _ in range(20):
+        g.RUN_STEPS(0.05, 0.05)
+        pitches.append(obj._rot.x)
+        rolls.append(obj._rot.z)
+    check("the roll swings both ways", min(rolls) < -0.1 < 0.1 < max(rolls),
+          (min(rolls), max(rolls)))
+    check("the pitch swings both ways",
+          min(pitches) < -0.1 < 0.1 < max(pitches), (min(pitches), max(pitches)))
+    # Three quarters of the pi/4 lean mcl_boats gives a boat at zero hp:
+    # a boat in trouble, not one coming apart.
+    peak = max(abs(v) for v in pitches + rolls)
+    check("tilt stays under the breaking-boat lean",
+          peak <= 3.14159 / 4 * 0.75 + 1e-6, peak)
+    check("but is still a real rock, not a wobble", peak > 0.3, peak)
+
+    # Still up top with a moment of the window left.
+    check("boat has not sunk before its time is up",
+          close(obj._pos.y, 4.35, 0.01), obj._pos.y)
+
+    # Past three seconds it must actually go, and quickly -- the whole point.
+    g.RUN_STEPS(1.2, 0.05)
+    check("boat is under way within a fifth of a second of the deadline",
+          obj._pos.y < 4.0, obj._pos.y)
+    g.RUN_STEPS(1.0, 0.05)
+    check("boat is a good way down one second into the sink",
+          obj._pos.y < 4.35 - 2.0, obj._pos.y)
+
+    # And it stops on the bottom rather than falling through the world.
+    g.RUN_STEPS(5.0, 0.05)
+    # The magma block's top face is y=0.5 and a boat's hull floor is its own
+    # origin, so resting on the block means an origin just above 0.5.
+    check("boat comes to rest on the magma block, not through it",
+          0.5 <= obj._pos.y < 1.0, obj._pos.y)
+    check("boat is fully under the water", obj._pos.y < 3.5, obj._pos.y)
+    check("boat is level again once it is under",
+          close(obj._rot.x, 0, 1e-6) and close(obj._rot.z, 0, 1e-6),
+          (obj._rot.x, obj._rot.z))
+
+
+def test_boat_sink_timing():
+    """The complaint that prompted all this: the sink came far too late."""
+    print("boats: sink timing")
+    lua, g, obj, boat = boat_world()
+
+    # Sample where the boat is at each half second.
+    depth_at = {}
+    for i in range(1, 13):
+        g.RUN_STEPS(0.5, 0.05)
+        depth_at[i * 0.5] = obj._pos.y
+
+    check("nothing at 1.0s", close(depth_at[1.0], 4.35, 0.01), depth_at[1.0])
+    check("nothing at 2.5s", close(depth_at[2.5], 4.35, 0.01), depth_at[2.5])
+    check("going down by 3.5s", depth_at[3.5] < 4.0, depth_at[3.5])
+    # Default is 3 m/s, so half a second past the deadline is ~1.5 nodes.
+    check("sinking at about the configured speed",
+          close(depth_at[3.5], 4.35 - 1.5, 0.2), depth_at[3.5])
+
+    # A longer window really does delay it, and a shorter one really does not.
+    lua2, g2, obj2, _ = boat_world({"bubble_columns_boat_rock_time": 8})
+    g2.RUN_STEPS(5.0, 0.05)
+    check("boat_rock_time=8 still floats at 5s",
+          close(obj2._pos.y, 4.35, 0.01), obj2._pos.y)
+
+    lua3, g3, obj3, _ = boat_world({"bubble_columns_boat_rock_time": 0.5})
+    g3.RUN_STEPS(1.0, 0.05)
+    check("boat_rock_time=0.5 is already sinking at 1s", obj3._pos.y < 4.0,
+          obj3._pos.y)
+
+
+def test_boat_selectivity():
+    print("boats: what must NOT happen")
+
+    # An updraft carries a boat; it must not rock or sink it.
+    lua = load_mod()
+    g = lua.globals()
+    g.REGISTER_STUB_BOATS()
+    g.RUN_MODS_LOADED()
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 4)
+    g.RUN_ABM_EVERY(0, 0, 0)
+    up_boat, _ = g.MAKE_BOAT(0, 4.35, 0)
+    g.RUN_STEPS(6.0, 0.05)
+    check("a boat in an updraft is never rocked",
+          close(up_boat._rot.x, 0, 1e-6) and close(up_boat._rot.z, 0, 1e-6),
+          (up_boat._rot.x, up_boat._rot.z))
+    check("a boat in an updraft does not sink",
+          close(up_boat._pos.y, 4.35, 0.01), up_boat._pos.y)
+
+    # Paddling clear during the warning window has to save it -- that is what
+    # the three seconds are for.
+    lua2, g2, obj2, boat2 = boat_world()
+    g2.RUN_STEPS(2.0, 0.05)
+    check("rocking after two seconds",
+          abs(obj2._rot.x) > 0.05 or abs(obj2._rot.z) > 0.05)
+    obj2._pos = g2.vector.new(30, 4.35, 30)
+    g2.WORLD_SET(30, 4, 30, "mcl_core:water_source")
+    g2.RUN_STEPS(1.0, 0.05)
+    check("a boat that leaves in time is levelled out again",
+          close(obj2._rot.x, 0, 1e-6) and close(obj2._rot.z, 0, 1e-6),
+          (obj2._rot.x, obj2._rot.z))
+    g2.RUN_STEPS(5.0, 0.05)
+    check("a boat that leaves in time never sinks",
+          close(obj2._pos.y, 4.35, 0.01), obj2._pos.y)
+
+    # And the clock restarts, rather than resuming where it left off.
+    obj2._pos = g2.vector.new(0, 4.35, 0)
+    g2.RUN_STEPS(2.0, 0.05)
+    check("the clock restarts on re-entry, it does not resume",
+          close(obj2._pos.y, 4.35, 0.01), obj2._pos.y)
+
+
+def test_bubbleboat_command():
+    print("/bubbleboat live tuning")
+    lua, g, obj, boat = boat_world()
+    cmd = g.CHATCOMMANDS["bubbleboat"]
+    check("command is registered", cmd is not None)
+
+    ok, text = cmd.func("nando", "")
+    check("reports the current timing with no argument",
+          ok is True and "3.00s" in text and "3.00 m/s" in text, text)
+
+    for bad in ("nope", "-1", "99", "3 0", "3 99", "3 3 0", "3 3 99"):
+        ok, _ = cmd.func("nando", bad)
+        check(f"rejects {bad!r}", ok is False)
+
+    ok, text = cmd.func("nando", "6")
+    check("accepts a new window", ok is True)
+    check("tells the user how to persist it",
+          "bubble_columns_boat_rock_time = 6" in text, text)
+
+    # The boat already rocking picks the new window up without a restart.
+    g.RUN_STEPS(4.0, 0.05)
+    check("already-rocking boat is held up by the longer window",
+          close(obj._pos.y, 4.35, 0.01), obj._pos.y)
+
+    ok, _ = cmd.func("nando", "0.5 6")
+    g.RUN_STEPS(1.0, 0.05)
+    check("a shorter window and faster sink both take effect",
+          obj._pos.y < 4.35 - 2.0, obj._pos.y)
+
+    # Sink speed alone must leave the window alone.
+    cmd.func("nando", "3 4.5")
+    _, text = cmd.func("nando", "")
+    check("setting the sink speed keeps the window",
+          "3.00s" in text and "4.50 m/s" in text, text)
+
+
 def test_particles():
     print("particles")
     lua = load_mod()
@@ -914,7 +1315,8 @@ def test_particles():
     build_column(lua, 0, 0, "mcl_nether:soul_sand", 4)
     g.PARTICLES_CLEAR()
     g.RUN_ABM(0, 0, 0)
-    check("ABM spawns exactly one spawner per column", len(g.PARTICLES) == 1)
+    check("ABM spawns the shaft and the surface", len(g.PARTICLES) == 2,
+          len(g.PARTICLES))
     spawner = g.PARTICLES[1]
     check("reuses the game's own bubble texture",
           spawner.texture == "mcl_particles_bubble.png", spawner.texture)
@@ -937,9 +1339,78 @@ def test_particles():
           g.PARTICLES[1].minvel.y)
 
 
+def test_surface_bubbles():
+    """The shaft bubbles stop a node below the top, which left a column
+    invisible from a boat or the shore. A second spawner breaks the surface."""
+    print("surface bubbles")
+    lua = load_mod()
+    g = lua.globals()
+    # Water at y=1..4, so the surface is the top face of node 4: y=4.5.
+    build_column(lua, 0, 0, "mcl_nether:soul_sand", 4)
+    g.PARTICLES_CLEAR()
+    g.RUN_ABM(0, 0, 0)
+    check("a surface spawner is added", len(g.PARTICLES) == 2, len(g.PARTICLES))
+    surface = g.PARTICLES[2]
+
+    check("it sits at the waterline, not up the shaft",
+          close(surface.maxpos.y, 4.5) and close(surface.minpos.y, 4.3),
+          f"{surface.minpos.y}..{surface.maxpos.y}")
+    check("it covers the column's own footprint",
+          close(surface.minpos.x, -0.5) and close(surface.maxpos.x, 0.5),
+          f"{surface.minpos.x}..{surface.maxpos.x}")
+    check("updraft froth rises through the surface", surface.maxvel.y > 0,
+          surface.maxvel.y)
+    # The whole point of the low speeds: they must pop, not fly off.
+    check("froth never gets more than a quarter node clear of the water",
+          surface.maxvel.y * surface.maxexptime < 0.5,
+          surface.maxvel.y * surface.maxexptime)
+    check("it is pulled back down", surface.minacc.y < 0, surface.minacc.y)
+    check("froth is smaller than the shaft bubbles",
+          surface.maxsize < g.PARTICLES[1].maxsize,
+          (surface.maxsize, g.PARTICLES[1].maxsize))
+    check("it outlives the ABM interval, like the shaft", surface.time > 2,
+          surface.time)
+
+    # A whirlpool dimples the surface rather than boiling out of it.
+    build_column(lua, 8, 0, "mcl_nether:magma", 4)
+    g.PARTICLES_CLEAR()
+    g.RUN_ABM(8, 0, 0)
+    check("whirlpool surface is drawn back under, not thrown up",
+          g.PARTICLES[2].minvel.y < 0 and g.PARTICLES[2].maxvel.y < 0.5,
+          (g.PARTICLES[2].minvel.y, g.PARTICLES[2].maxvel.y))
+
+    # Under a ceiling there is no surface, and bubbles there would be inside
+    # the block.
+    build_column(lua, 16, 0, "mcl_nether:soul_sand", 4)
+    g.WORLD_SET(16, 5, 0, "mcl_core:stone")
+    g.PARTICLES_CLEAR()
+    g.RUN_ABM(16, 0, 0)
+    check("no surface bubbles under a solid ceiling", len(g.PARTICLES) == 1,
+          len(g.PARTICLES))
+
+    # Same where flowing water cuts the column short: that is not the surface.
+    build_column(lua, 24, 0, "mcl_nether:soul_sand", 6)
+    g.WORLD_SET(24, 4, 0, "mcl_core:water_flowing")
+    g.PARTICLES_CLEAR()
+    g.RUN_ABM(24, 0, 0)
+    check("no surface bubbles where flowing water cut the column short",
+          len(g.PARTICLES) == 1, len(g.PARTICLES))
+
+    # And the shaft is unaffected by the switch being off.
+    lua2 = load_mod({"bubble_columns_surface_bubbles": False})
+    g2 = lua2.globals()
+    build_column(lua2, 0, 0, "mcl_nether:soul_sand", 4)
+    g2.PARTICLES_CLEAR()
+    g2.RUN_ABM(0, 0, 0)
+    check("surface_bubbles=false leaves only the shaft", len(g2.PARTICLES) == 1,
+          len(g2.PARTICLES))
+
+
 def main():
     print(f"bubble_columns offline tests  (lua {lupa.LuaRuntime().lua_implementation})\n")
     for test in (test_column_detection, test_source_water_only,
+                 test_voxelibre_water, test_voxelibre_boat,
+                 test_missing_source_block_is_loud,
                  test_max_height, test_updraft_physics,
                  test_whirlpool_physics, test_standing_on_the_source_block,
                  test_selectivity, test_breath,
@@ -947,7 +1418,9 @@ def main():
                  test_join_cleanup,
                  test_bubblecheck_command, test_bubblespeed_command,
                  test_bubbletaper_command,
-                 test_expiry, test_particles):
+                 test_boat_rocks_then_sinks, test_boat_sink_timing,
+                 test_boat_selectivity, test_bubbleboat_command,
+                 test_expiry, test_particles, test_surface_bubbles):
         test()
         print()
 
