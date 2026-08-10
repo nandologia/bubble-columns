@@ -841,6 +841,25 @@ core.register_chatcommand("bubblecheck", {
 			elseif not is_column_water(n) then
 				say("stage 1 FAIL: hit %s at %d before finding a source block",
 					n, y - i)
+				-- The commonest way to get here is running the command from
+				-- the bank while looking at the column.  The scan goes down
+				-- from your feet, so standing anywhere dry fails on the very
+				-- first node and says nothing about the column itself.
+				if i == 0 and not is_water(n) then
+					say("  ^ you are not in the water, so this checked the")
+					say("    ground you are standing on, not the column.")
+					say("    Swim in until you are inside the water above the")
+					say("    block, then run this again.")
+				elseif n == "air" then
+					say("  ^ air below the water means the shaft is broken.")
+					say("    A column needs an unbroken run of water sitting")
+					say("    directly on the block.")
+				elseif core.get_item_group(n, "water") > 0 then
+					say("  ^ that is FLOWING water, not still. A column stops")
+					say("    dead where the water starts flowing. Fill the")
+					say("    shaft bucket by bucket, or plant kelp, to turn it")
+					say("    still.")
+				end
 				if n == "mcl_blackstone:soul_soil" then
 					say("  ^ that is Soul SOIL, not Soul SAND. They are")
 					say("    different blocks and only soul sand makes a")

@@ -1042,6 +1042,30 @@ def test_bubblecheck_command():
     ok, text = cmd.func("nobody")
     check("unknown player is handled", ok is False)
 
+    # The commonest real-world confusion: running it from the bank while
+    # looking at the column. The scan goes down from the feet, so it fails on
+    # the very first node and says nothing about the column at all.
+    lua_dry = load_mod()
+    gd = lua_dry.globals()
+    build_column(lua_dry, 0, 0, "mcl_nether:soul_sand", 4)
+    gd.MAKE_OBJECT(9, 12, 9, lua_dry.table(player=True, name="shore"))
+    _, text = gd.CHATCOMMANDS["bubblecheck"].func("shore")
+    check("standing on dry land says so, rather than blaming the column",
+          "you are not in the water" in text, text)
+    check("and tells them to swim in", "Swim in" in text, text)
+
+    # Flowing water is the other one, and used to report only the node name.
+    lua_flow = load_mod()
+    gf = lua_flow.globals()
+    build_column(lua_flow, 0, 0, "mcl_nether:soul_sand", 6)
+    gf.WORLD_SET(0, 3, 0, "mcl_core:water_flowing")
+    gf.MAKE_OBJECT(0, 4, 0, lua_flow.table(player=True, name="wade"))
+    _, text = gf.CHATCOMMANDS["bubblecheck"].func("wade")
+    check("flowing water is named as the cause, not just the node",
+          "FLOWING water" in text, text)
+    check("and says how to make it still",
+          "bucket by bucket" in text, text)
+
 
 def test_bubblespeed_command():
     """Climb speed can only be judged by riding a column, so it must be
