@@ -1,0 +1,7 @@
+# Kept in the repo but left out of ContentDB releases, which are built with
+# git archive: players downloading the mod should get the mod, not the promo
+# art or the test harness.
+.gitattributes  export-ignore
+.gitignore      export-ignore
+screenshots     export-ignore
+tests           export-ignore
