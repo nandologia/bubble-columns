@@ -1054,6 +1054,28 @@ def test_bubblecheck_command():
           "you are not in the water" in text, text)
     check("and tells them to swim in", "Swim in" in text, text)
 
+    # The block placed on dry land: right block, no water on it. "measured
+    # height = 0" is the whole report, and reads as a bare number.
+    lua_dry2 = load_mod()
+    gd2 = lua_dry2.globals()
+    gd2.WORLD_SET(0, 7, 0, "mcl_nether:soul_sand")
+    gd2.MAKE_OBJECT(0, 7, 0, lua_dry2.table(player=True, name="dusty"))
+    _, text = gd2.CHATCOMMANDS["bubblecheck"].func("dusty")
+    check("a block with no water on it says so", "height = 0" in text, text)
+    check("and names what is above it instead",
+          "nothing above the block but air" in text, text)
+    check("and says to flood it", "Flood it" in text, text)
+
+    # Same block, but the water on it is flowing rather than still.
+    lua_fl = load_mod()
+    gfl = lua_fl.globals()
+    gfl.WORLD_SET(0, 7, 0, "mcl_nether:soul_sand")
+    gfl.WORLD_SET(0, 8, 0, "mcl_core:water_flowing")
+    gfl.MAKE_OBJECT(0, 7, 0, lua_fl.table(player=True, name="drip"))
+    _, text = gfl.CHATCOMMANDS["bubblecheck"].func("drip")
+    check("flowing water on the block is named as such",
+          "FLOWING water" in text and "height = 0" in text, text)
+
     # Flowing water is the other one, and used to report only the node name.
     lua_flow = load_mod()
     gf = lua_flow.globals()

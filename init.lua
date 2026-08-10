@@ -872,7 +872,25 @@ core.register_chatcommand("bubblecheck", {
 		if found_source then
 			say("stage 1 ok: %s at %s (%s column)", found_source,
 				core.pos_to_string(source_pos), SOURCES[found_source])
-			say("stage 2: measured height = %d", measure_column(source_pos))
+			local height = measure_column(source_pos)
+			say("stage 2: measured height = %d", height)
+			-- A block placed on dry land, or at the bottom of a shaft that
+			-- was never flooded, is the other half of the stage 1 confusion:
+			-- the block is right, and there is simply no water on it.
+			if height == 0 then
+				local above = core.get_node({
+					x = source_pos.x, y = source_pos.y + 1, z = source_pos.z,
+				}).name
+				say("  ^ nothing above the block but %s.", above)
+				if core.get_item_group(above, "water") > 0 then
+					say("    That is FLOWING water. A column needs STILL")
+					say("    water sitting directly on the block -- fill the")
+					say("    shaft bucket by bucket, or plant kelp.")
+				else
+					say("    A column is a shaft of still water standing ON")
+					say("    the block. Flood it and the bubbles will start.")
+				end
+			end
 			local registered = columns[core.hash_node_position(source_pos)]
 			say("stage 3 %s: column %s in the live registry",
 				registered and "ok" or "FAIL",
